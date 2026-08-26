@@ -10,6 +10,7 @@ directly between machines over TCP. No server, no account, no cloud.
   (HELLO / heartbeat / BYE), so peers appear and disappear on their own.
 - **Text chat** — one conversation per peer, with sent / delivered / failed status.
   Message text is selectable and copyable (drag-select + Ctrl+C, or right-click → Copy).
+  A message or file that fails to send shows a **Retry** button to try again.
 - **Edit & delete messages** — right-click one of your own messages to edit it inline or
   delete it; press Arrow-Up in an empty message box to edit your last one. Changes sync to
   the peer: edited messages are marked "edited"; deleted ones leave a "message deleted"
@@ -32,7 +33,7 @@ directly between machines over TCP. No server, no account, no cloud.
   off, and cleared per-conversation or all at once, from Settings.
 - **Search** — the sidebar box (Ctrl+F) filters people (name/host/IP) and searches message
   text across every saved conversation; click a hit to jump to that message, which is
-  scrolled into view and briefly highlighted.
+  scrolled into view and briefly flashed, with the matched term highlighted inside the bubble.
   A find bar over the open chat shows the match count and steps through hits with
   next/previous (Enter / Shift+Enter, or F3 / Shift+F3).
 - **Export** — save any conversation to a `.txt` or `.md` transcript from the chat header.

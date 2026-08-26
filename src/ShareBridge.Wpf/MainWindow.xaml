@@ -74,22 +74,28 @@
                     <Grid>
                         <!-- View mode -->
                         <StackPanel x:Name="ViewPanel">
-                            <!-- Read-only TextBox so message text can be selected and copied. -->
-                            <TextBox x:Name="MessageText"
-                                     Text="{Binding Text, Mode=OneWay}"
-                                     IsReadOnly="True"
-                                     IsReadOnlyCaretVisible="False"
-                                     IsTabStop="False"
-                                     BorderThickness="0"
-                                     Background="Transparent"
-                                     Padding="0"
-                                     Foreground="{StaticResource TextBrush}"
-                                     FontSize="13"
-                                     TextWrapping="Wrap"
-                                     Cursor="IBeam"
-                                     SelectionBrush="{StaticResource AccentBrush}"
-                                     infra:WheelToParent.Enabled="True">
-                                <TextBox.ContextMenu>
+                            <!-- Read-only RichTextBox: selectable/copyable text with in-bubble
+                                 search highlighting. MessageDocument sets its width to the text
+                                 content so the bubble hugs the message. -->
+                            <RichTextBox x:Name="MessageText"
+                                         IsReadOnly="True"
+                                         IsReadOnlyCaretVisible="False"
+                                         IsDocumentEnabled="True"
+                                         IsTabStop="False"
+                                         HorizontalAlignment="Left"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         Padding="0"
+                                         Foreground="{StaticResource TextBrush}"
+                                         FontSize="13"
+                                         VerticalScrollBarVisibility="Disabled"
+                                         HorizontalScrollBarVisibility="Disabled"
+                                         Cursor="IBeam"
+                                         SelectionBrush="{StaticResource AccentBrush}"
+                                         infra:WheelToParent.Enabled="True"
+                                         infra:MessageDocument.Text="{Binding Text}"
+                                         infra:MessageDocument.Query="{Binding DataContext.SearchTerm, RelativeSource={RelativeSource AncestorType=Window}}">
+                                <RichTextBox.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Copy" Command="{Binding CopyCommand}" />
                                         <Separator Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
@@ -98,19 +104,14 @@
                                         <MenuItem Header="Delete" Command="{Binding DeleteCommand}"
                                                   Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
                                     </ContextMenu>
-                                </TextBox.ContextMenu>
-                            </TextBox>
-                            <TextBlock x:Name="DeletedText"
-                                       Text="🚫  This message was deleted"
-                                       Style="{StaticResource DimText}"
-                                       FontStyle="Italic"
-                                       Visibility="Collapsed" />
+                                </RichTextBox.ContextMenu>
+                            </RichTextBox>
                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0" HorizontalAlignment="Right">
                                 <TextBlock Text="edited"
                                            Style="{StaticResource DimText}"
                                            FontSize="10" FontStyle="Italic"
                                            Margin="0,0,6,0"
-                                           Visibility="{Binding ShowEdited, Converter={StaticResource BoolToVisibility}}" />
+                                           Visibility="{Binding Edited, Converter={StaticResource BoolToVisibility}}" />
                                 <TextBlock x:Name="Status"
                                            Text="{Binding StatusText}"
                                            Style="{StaticResource DimText}"
@@ -121,6 +122,14 @@
                                            Style="{StaticResource DimText}"
                                            FontSize="10" />
                             </StackPanel>
+
+                            <!-- Retry appears under a message that failed to send. -->
+                            <Button Content="↻ Retry"
+                                    Style="{StaticResource GhostButton}"
+                                    Padding="10,3" FontSize="11"
+                                    HorizontalAlignment="Right" Margin="0,5,0,0"
+                                    Command="{Binding RetryCommand}"
+                                    Visibility="{Binding IsFailed, Converter={StaticResource BoolToVisibility}}" />
                         </StackPanel>
 
                         <!-- Edit mode -->
@@ -166,13 +175,6 @@
                     <Setter TargetName="EditPanel" Property="Visibility" Value="Visible" />
                     <Setter TargetName="Bubble" Property="Background" Value="{StaticResource SurfaceBrush}" />
                 </DataTrigger>
-                <!-- Deleted: show a tombstone placeholder instead of the text. -->
-                <DataTrigger Binding="{Binding IsDeleted}" Value="True">
-                    <Setter TargetName="MessageText" Property="Visibility" Value="Collapsed" />
-                    <Setter TargetName="DeletedText" Property="Visibility" Value="Visible" />
-                    <Setter TargetName="Bubble" Property="Background" Value="{StaticResource SurfaceBrush}" />
-                    <Setter TargetName="Bubble" Property="Opacity" Value="0.75" />
-                </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
 
@@ -207,21 +209,39 @@
                                  Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}" />
 
                     <Grid Margin="0,8,0,0">
-                        <TextBlock x:Name="StatusLine"
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   x:Name="StatusLine"
                                    Text="{Binding StatusText}"
                                    Style="{StaticResource DimText}"
-                                   VerticalAlignment="Center" />
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="0,0,10,0" />
 
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button Content="Cancel"
                                     Style="{StaticResource DangerButton}"
                                     Command="{Binding CancelCommand}"
                                     Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}" />
+                            <Button Content="↻ Retry"
+                                    Style="{StaticResource GhostButton}"
+                                    Padding="10,5" Margin="0,0,8,0"
+                                    Command="{Binding RetryCommand}"
+                                    Visibility="{Binding CanRetry, Converter={StaticResource BoolToVisibility}}" />
                             <Button Content="Open folder"
                                     Style="{StaticResource GhostButton}"
-                                    Padding="10,5"
+                                    Padding="10,5" Margin="0,0,8,0"
                                     Command="{Binding OpenFolderCommand}"
                                     Visibility="{Binding CanOpenFolder, Converter={StaticResource BoolToVisibility}}" />
+                            <Button Content="Delete"
+                                    Style="{StaticResource GhostButton}"
+                                    Padding="10,5"
+                                    Command="{Binding DeleteCommand}"
+                                    Visibility="{Binding CanDelete, Converter={StaticResource BoolToVisibility}}" />
                         </StackPanel>
                     </Grid>
 
@@ -259,25 +279,6 @@
                     <Run Text="{Binding Sender, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=": " /><Run Text="{Binding Snippet, Mode=OneWay}" />
                 </TextBlock>
             </StackPanel>
-        </DataTemplate>
-
-        <!-- Compact row for the active-transfers strip -->
-        <DataTemplate x:Key="ActiveTransferTemplate" DataType="{x:Type vm:TransferViewModel}">
-            <Border Background="{StaticResource SurfaceAltBrush}" CornerRadius="6"
-                    Padding="10,6" Margin="0,0,8,0" MinWidth="230">
-                <StackPanel>
-                    <Grid>
-                        <TextBlock Text="{Binding HeaderText}" Style="{StaticResource DimText}"
-                                   FontSize="11" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{Binding StatusText}" Style="{StaticResource DimText}"
-                                   FontSize="11" HorizontalAlignment="Right" />
-                    </Grid>
-                    <TextBlock Text="{Binding Title}" Foreground="{StaticResource TextBrush}"
-                               FontSize="12" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
-                    <ProgressBar Style="{StaticResource ThinProgress}" Margin="0,6,0,0"
-                                 Minimum="0" Maximum="100" Value="{Binding Percent, Mode=OneWay}" />
-                </StackPanel>
-            </Border>
         </DataTemplate>
 
     </Window.Resources>
@@ -403,7 +404,6 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Conversation header -->
@@ -472,25 +472,8 @@
                                TextAlignment="Center" MaxWidth="360" TextWrapping="Wrap" />
                 </StackPanel>
 
-                <!-- Active transfers strip -->
-                <Border Grid.Row="3" Padding="18,10"
-                        Background="{StaticResource SurfaceBrush}"
-                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0"
-                        Visibility="{Binding ActiveTransfers.Count, Converter={StaticResource CountToVisibility}}">
-                    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                        <ItemsControl ItemsSource="{Binding ActiveTransfers}"
-                                      ItemTemplate="{StaticResource ActiveTransferTemplate}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <StackPanel Orientation="Horizontal" />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </Border>
-
                 <!-- Composer -->
-                <Border Grid.Row="4" Padding="18,12"
+                <Border Grid.Row="3" Padding="18,12"
                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0"
                         Visibility="{Binding SelectedPeer, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}">
                     <Grid>
@@ -518,7 +501,7 @@
                 </Border>
 
                 <!-- Drop overlay -->
-                <Border x:Name="DropOverlay" Grid.RowSpan="5"
+                <Border x:Name="DropOverlay" Grid.RowSpan="4"
                         Background="#CC14161A"
                         Visibility="Collapsed"
                         IsHitTestVisible="False">

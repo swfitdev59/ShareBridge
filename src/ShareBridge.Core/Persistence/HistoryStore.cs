@@ -131,21 +131,30 @@ public sealed class HistoryStore
                     break;
 
                 case HistoryEntry.KindDelete:
-                    // Keep a tombstone in place rather than dropping the message, so a
-                    // "message deleted" placeholder survives a restart.
-                    if (!string.IsNullOrEmpty(entry.Id) && byId.TryGetValue(entry.Id, out var target)
-                        && target.Kind == HistoryEntry.KindMessage)
-                    {
-                        target.Deleted = true;
-                        target.Text = null;
-                        target.Edited = false;
-                    }
+                    // Deleted messages and transfers are removed outright — no placeholder.
+                    if (!string.IsNullOrEmpty(entry.Id) && byId.Remove(entry.Id, out var removed))
+                        result.Remove(removed);
                     break;
 
                 default:
-                    result.Add(entry);
-                    if (!string.IsNullOrEmpty(entry.Id))
-                        byId[entry.Id] = entry;
+                    // A later record for the same id supersedes the earlier one in place
+                    // (e.g. a message re-sent on retry moves from Failed to Delivered),
+                    // keeping its original position and timestamp.
+                    if (!string.IsNullOrEmpty(entry.Id) && byId.TryGetValue(entry.Id, out var prior)
+                        && prior.Kind == entry.Kind)
+                    {
+                        prior.Text = entry.Text;
+                        prior.Status = entry.Status;
+                        prior.Edited = entry.Edited;
+                        prior.Deleted = entry.Deleted;
+                        prior.TransferStatus = entry.TransferStatus;
+                    }
+                    else
+                    {
+                        result.Add(entry);
+                        if (!string.IsNullOrEmpty(entry.Id))
+                            byId[entry.Id] = entry;
+                    }
                     break;
             }
         }

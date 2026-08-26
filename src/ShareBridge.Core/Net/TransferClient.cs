@@ -78,11 +78,23 @@ public sealed class TransferClient
     /// Expands the given files and folders into a flat item list and streams them.
     /// The returned <see cref="Transfer"/> is the same instance carried by the events.
     /// </summary>
-    public async Task<Transfer> SendFilesAsync(Peer peer, IReadOnlyList<string> paths, CancellationToken ct)
+    public Task<Transfer> SendFilesAsync(Peer peer, IReadOnlyList<string> paths, CancellationToken ct)
     {
         var items = EnumerateItems(paths);
         if (items.Count == 0)
             throw new InvalidOperationException("Nothing to send: no readable files were found in that selection.");
+
+        return SendItemsAsync(peer, items, ct);
+    }
+
+    /// <summary>
+    /// Streams an already-resolved set of items (each with a <see cref="TransferItem.SourcePath"/>).
+    /// Used to retry a failed transfer while keeping its original relative paths.
+    /// </summary>
+    public async Task<Transfer> SendItemsAsync(Peer peer, IReadOnlyList<TransferItem> items, CancellationToken ct)
+    {
+        if (items.Count == 0 || items.Any(i => string.IsNullOrEmpty(i.SourcePath)))
+            throw new InvalidOperationException("These files can no longer be located to send.");
 
         var transfer = new Transfer
         {
@@ -96,13 +108,45 @@ public sealed class TransferClient
         };
 
         TransferStarted?.Invoke(this, new TransferEventArgs(transfer));
+        await RunTransferAsync(peer, transfer, ct).ConfigureAwait(false);
+        return transfer;
+    }
 
+    /// <summary>
+    /// Re-runs an existing (failed/declined/cancelled) transfer in place, so the same card
+    /// updates instead of a new one appearing. Reuses the transfer's items and id.
+    /// </summary>
+    public async Task RetryAsync(Peer peer, Transfer transfer, CancellationToken ct)
+    {
+        if (transfer.Items.Count == 0 || transfer.Items.Any(i => string.IsNullOrEmpty(i.SourcePath)))
+            throw new InvalidOperationException("These files can no longer be located to send.");
+
+        transfer.ResetForRetry();
+
+        // Re-announce the same transfer so the view re-activates its existing card.
+        TransferStarted?.Invoke(this, new TransferEventArgs(transfer));
+        await RunTransferAsync(peer, transfer, ct).ConfigureAwait(false);
+    }
+
+    private async Task RunTransferAsync(Peer peer, Transfer transfer, CancellationToken ct)
+    {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, transfer.Cancellation.Token);
         var token = linked.Token;
 
+        TcpClient? client = null;
+
+        // A socket receive that is parked waiting for data does NOT observe token
+        // cancellation — the only reliable way to unblock it (e.g. cancel while
+        // "waiting for the other side") is to close the socket. So dispose it on cancel.
+        await using var cancelReg = token.Register(() =>
+        {
+            try { client?.Dispose(); }
+            catch (ObjectDisposedException) { }
+        });
+
         try
         {
-            using var client = await ConnectAsync(peer, token).ConfigureAwait(false);
+            client = await ConnectAsync(peer, token).ConfigureAwait(false);
             await using var stream = client.GetStream();
 
             var offer = new OfferFrame
@@ -110,7 +154,7 @@ public sealed class TransferClient
                 From = _self,
                 TransferId = transfer.Id,
                 TotalBytes = transfer.TotalBytes,
-                Items = [.. items.Select(i => new OfferItem { Rel = i.RelativePath, Size = i.Size })],
+                Items = [.. transfer.Items.Select(i => new OfferItem { Rel = i.RelativePath, Size = i.Size })],
             };
 
             await FrameIO.WriteFrameAsync(stream, offer, token).ConfigureAwait(false);
@@ -139,21 +183,24 @@ public sealed class TransferClient
 
             Finish(transfer, TransferStatus.Completed, null);
         }
-        catch (OperationCanceledException)
-        {
-            Finish(transfer, TransferStatus.Cancelled,
-                transfer.Cancellation.IsCancellationRequested ? "Cancelled." : "Shutting down.");
-        }
         catch (OfferRejectedException ex)
         {
             Finish(transfer, TransferStatus.Rejected, ex.Message);
+        }
+        catch (Exception) when (token.IsCancellationRequested)
+        {
+            // Includes the ObjectDisposedException/IOException from closing the socket above.
+            Finish(transfer, TransferStatus.Cancelled,
+                transfer.Cancellation.IsCancellationRequested ? "Cancelled." : "Shutting down.");
         }
         catch (Exception ex)
         {
             Finish(transfer, TransferStatus.Failed, ex.Message);
         }
-
-        return transfer;
+        finally
+        {
+            client?.Dispose();
+        }
     }
 
     private async Task StreamFilesAsync(Stream stream, Transfer transfer, CancellationToken ct)

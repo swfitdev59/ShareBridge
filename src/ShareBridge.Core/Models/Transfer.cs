@@ -92,9 +92,22 @@ public sealed class Transfer
         };
     }
 
-    internal CancellationTokenSource Cancellation { get; } = new();
+    internal CancellationTokenSource Cancellation { get; private set; } = new();
 
     public bool IsActive => Status is TransferStatus.Pending or TransferStatus.Negotiating or TransferStatus.Running;
+
+    /// <summary>Rewinds a finished transfer so it can run again on the same object (retry).</summary>
+    internal void ResetForRetry()
+    {
+        DisposeCancellation();
+        Cancellation = new CancellationTokenSource();
+
+        TransferredBytes = 0;
+        BytesPerSecond = 0;
+        Error = null;
+        FinishedAt = null;
+        Status = TransferStatus.Negotiating;
+    }
 
     public double Percent => TotalBytes <= 0 ? 0 : Math.Round(TransferredBytes * 100.0 / TotalBytes, 1);
 

@@ -64,9 +64,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     public ListCollectionView PeersView { get; }
 
-    /// <summary>Transfers still in flight, shown in the bar under the conversation.</summary>
-    public ObservableCollection<TransferViewModel> ActiveTransfers { get; } = [];
-
     /// <summary>Messages across all conversations that match the current search query.</summary>
     public ObservableCollection<SearchResultViewModel> SearchResults { get; } = [];
 
@@ -366,9 +363,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private void OnTransferStarted(Transfer transfer)
     {
         var vm = GetOrCreateTransfer(transfer);
-
-        if (!ActiveTransfers.Contains(vm))
-            ActiveTransfers.Add(vm);
+        vm.Refresh(); // reflect a retried transfer's reset state on its existing card
 
         var peer = ResolvePeer(transfer);
         if (peer is not null && !peer.Timeline.Contains(vm))
@@ -387,7 +382,6 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var vm = GetOrCreateTransfer(transfer);
         vm.Refresh();
-        ActiveTransfers.Remove(vm);
 
         // A transfer that got as far as running (or beyond) is worth remembering;
         // a bare rejection before any bytes moved is noise.
@@ -499,8 +493,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         foreach (var entry in _history.Load(vm.Id))
         {
+            // Route transfers through GetOrCreateTransfer so a reloaded card's Delete/Retry
+            // commands are wired up (a bare new TransferViewModel has no handlers).
             object item = entry.Kind == HistoryEntry.KindTransfer
-                ? new TransferViewModel(BuildHistoricalTransfer(vm, entry))
+                ? GetOrCreateTransfer(BuildHistoricalTransfer(vm, entry))
                 : NewMessage(vm, BuildHistoricalMessage(vm, entry));
 
             vm.Timeline.Add(item);
@@ -543,7 +539,27 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var message = new MessageViewModel(model);
         message.EditCommitted += text => EditOwnMessage(peer, message, text);
         message.DeleteRequested += () => DeleteOwnMessage(peer, message);
+        message.RetryRequested += () => _ = RetryMessageAsync(peer, message);
         return message;
+    }
+
+    private async Task RetryMessageAsync(PeerViewModel peer, MessageViewModel message)
+    {
+        if (_node is null)
+            return;
+
+        message.Model.Status = MessageStatus.Sending;
+        message.RefreshStatus();
+
+        var result = await _node.RetryMessageAsync(peer.Model, message.Model);
+        message.RefreshStatus();
+
+        // Re-persist so the settled status supersedes the earlier "failed" record on reload.
+        _history.AppendMessage(peer.Id, message.Model);
+
+        StatusText = result.Status == MessageStatus.Delivered
+            ? $"Message to {peer.Name} sent."
+            : $"Still could not reach {peer.Name}.";
     }
 
     private void EditOwnMessage(PeerViewModel peer, MessageViewModel message, string newText)
@@ -560,20 +576,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void DeleteOwnMessage(PeerViewModel peer, MessageViewModel message)
     {
-        MarkDeleted(message);
+        peer.Timeline.Remove(message);
         _history.AppendDelete(peer.Id, message.Model.Id);
         RefreshSearchIfActive();
 
         _ = SyncDeleteAsync(peer, message.Model.Id);
-    }
-
-    /// <summary>Turns a message into a "deleted" placeholder, dropping its text.</summary>
-    private static void MarkDeleted(MessageViewModel message)
-    {
-        message.Model.Deleted = true;
-        message.Model.Edited = false;
-        message.Model.Text = string.Empty;
-        message.RefreshText();
     }
 
     private async Task SyncEditAsync(PeerViewModel peer, string messageId, string newText)
@@ -624,7 +631,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (message is null)
             return;
 
-        MarkDeleted(message);
+        peer.Timeline.Remove(message);
         _history.AppendDelete(peer.Id, e.MessageId);
         RefreshSearchIfActive();
     }
@@ -807,8 +814,48 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             return existing;
 
         var vm = new TransferViewModel(transfer);
+        vm.RetryRequested += () => RetryTransfer(vm);
+        vm.DeleteRequested += () => DeleteTransfer(vm);
         _transfersById[transfer.Id] = vm;
         return vm;
+    }
+
+    /// <summary>Removes a finished transfer's card from the conversation and history.</summary>
+    private void DeleteTransfer(TransferViewModel transfer)
+    {
+        if (transfer.Model.IsActive)
+            return;
+
+        var peer = ResolvePeer(transfer.Model);
+        peer?.Timeline.Remove(transfer);
+        _transfersById.Remove(transfer.Model.Id);
+
+        _history.AppendDelete(transfer.Model.PeerId, transfer.Model.Id);
+    }
+
+    /// <summary>Retries a failed outgoing transfer in place, re-running its existing card.</summary>
+    private void RetryTransfer(TransferViewModel transfer)
+    {
+        if (_node is null || !transfer.CanRetry)
+            return;
+
+        var peer = ResolvePeer(transfer.Model);
+        if (peer is null)
+            return;
+
+        _ = RetryTransferAsync(peer, transfer.Model);
+    }
+
+    private async Task RetryTransferAsync(PeerViewModel peer, Transfer transfer)
+    {
+        try
+        {
+            await _node!.RetryTransferAsync(peer.Model, transfer);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not resend: {ex.Message}";
+        }
     }
 
     private bool FilterPeer(object item)

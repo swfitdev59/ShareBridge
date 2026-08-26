@@ -19,7 +19,8 @@ public sealed class MessageViewModel : ObservableObject
         CommitEditCommand = new RelayCommand(_ => CommitEdit());
         CancelEditCommand = new RelayCommand(_ => CancelEdit());
         DeleteCommand = new RelayCommand(_ => DeleteRequested?.Invoke(), _ => CanModify);
-        CopyCommand = new RelayCommand(_ => CopyText(), _ => !Model.Deleted && Model.Text.Length > 0);
+        CopyCommand = new RelayCommand(_ => CopyText(), _ => Model.Text.Length > 0);
+        RetryCommand = new RelayCommand(_ => RetryRequested?.Invoke(), _ => IsFailed);
     }
 
     public ChatMessage Model { get; }
@@ -30,17 +31,17 @@ public sealed class MessageViewModel : ObservableObject
     /// <summary>Raised when the user chooses to delete this message.</summary>
     public event Action? DeleteRequested;
 
+    /// <summary>Raised when the user retries a failed message.</summary>
+    public event Action? RetryRequested;
+
     public string Text => Model.Text;
 
     public bool IsOutgoing => Model.Direction == MessageDirection.Outgoing;
 
-    public bool IsDeleted => Model.Deleted;
+    /// <summary>Only your own delivered messages can be edited or deleted.</summary>
+    public bool CanModify => IsOutgoing && Model.Status != MessageStatus.Sending;
 
-    /// <summary>Only your own delivered, non-deleted messages can be edited or deleted.</summary>
-    public bool CanModify => IsOutgoing && Model.Status != MessageStatus.Sending && !Model.Deleted;
-
-    /// <summary>Show the "edited" marker only for an edit that has not since been deleted.</summary>
-    public bool ShowEdited => Model.Edited && !Model.Deleted;
+    public bool Edited => Model.Edited;
 
     public string TimestampText => Format.Timestamp(Model.Timestamp);
 
@@ -79,14 +80,14 @@ public sealed class MessageViewModel : ObservableObject
     public ICommand CancelEditCommand { get; }
     public ICommand DeleteCommand { get; }
     public ICommand CopyCommand { get; }
+    public ICommand RetryCommand { get; }
 
     /// <summary>Called after the send completes so the bubble reflects the final state.</summary>
     public void RefreshStatus() =>
         RaiseAll(nameof(IsFailed), nameof(IsSending), nameof(StatusText), nameof(CanModify));
 
-    /// <summary>Re-reads text, edited and deleted state after a change (local or from the peer).</summary>
-    public void RefreshText() =>
-        RaiseAll(nameof(Text), nameof(ShowEdited), nameof(IsDeleted), nameof(CanModify));
+    /// <summary>Re-reads text and edited state after an edit (local or from the peer).</summary>
+    public void RefreshText() => RaiseAll(nameof(Text), nameof(Edited), nameof(CanModify));
 
     private void BeginEdit()
     {

@@ -159,6 +159,35 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     public Task<Transfer> SendFilesAsync(Peer peer, IReadOnlyList<string> paths, CancellationToken ct = default) =>
         _client.SendFilesAsync(peer, paths, ct);
 
+    /// <summary>Resends an already-resolved item set as a new transfer.</summary>
+    public Task<Transfer> SendItemsAsync(Peer peer, IReadOnlyList<TransferItem> items, CancellationToken ct = default) =>
+        _client.SendItemsAsync(peer, items, ct);
+
+    /// <summary>Re-runs a failed transfer in place (same card), reusing its items and id.</summary>
+    public Task RetryTransferAsync(Peer peer, Transfer transfer, CancellationToken ct = default) =>
+        _client.RetryAsync(peer, transfer, ct);
+
+    /// <summary>
+    /// Resends an existing (failed) message, keeping its id so history and any later
+    /// edit/delete still refer to the same message. Updates and returns its status.
+    /// </summary>
+    public async Task<ChatMessage> RetryMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default)
+    {
+        message.Status = MessageStatus.Sending;
+        try
+        {
+            await _client.SendMessageAsync(peer, message, ct).ConfigureAwait(false);
+            message.Status = MessageStatus.Delivered;
+        }
+        catch (Exception ex)
+        {
+            message.Status = MessageStatus.Failed;
+            Log?.Invoke(this, $"Retry to {peer.DisplayLabel} failed: {ex.Message}");
+        }
+
+        return message;
+    }
+
     /// <summary>Re-broadcasts identity after the display name changes.</summary>
     public async Task RefreshIdentityAsync()
     {

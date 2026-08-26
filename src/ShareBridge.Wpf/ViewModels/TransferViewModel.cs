@@ -13,15 +13,40 @@ public sealed class TransferViewModel : ObservableObject
         Model = model;
         CancelCommand = new RelayCommand(_ => Model.Cancel(), _ => Model.IsActive);
         OpenFolderCommand = new RelayCommand(_ => OpenDestination(), _ => CanOpenFolder);
+        RetryCommand = new RelayCommand(_ => RetryRequested?.Invoke(), _ => CanRetry);
+        DeleteCommand = new RelayCommand(_ => DeleteRequested?.Invoke(), _ => CanDelete);
     }
 
     public Transfer Model { get; }
+
+    /// <summary>Raised when the user retries a failed outgoing transfer.</summary>
+    public event Action? RetryRequested;
+
+    /// <summary>Raised when the user removes this transfer's card.</summary>
+    public event Action? DeleteRequested;
 
     public ICommand CancelCommand { get; }
 
     public ICommand OpenFolderCommand { get; }
 
+    public ICommand RetryCommand { get; }
+
+    public ICommand DeleteCommand { get; }
+
+    /// <summary>A finished transfer's card can be removed from the conversation.</summary>
+    public bool CanDelete => !Model.IsActive;
+
     public bool IsOutgoing => Model.Direction == TransferDirection.Outgoing;
+
+    /// <summary>
+    /// A failed/declined/cancelled outgoing transfer can be retried, as long as its source
+    /// files are still known (they are not for a transfer reloaded from history).
+    /// </summary>
+    public bool CanRetry =>
+        IsOutgoing
+        && Model.Status is TransferStatus.Failed or TransferStatus.Rejected or TransferStatus.Cancelled
+        && Model.Items.Count > 0
+        && Model.Items.All(i => !string.IsNullOrEmpty(i.SourcePath));
 
     public string Title => Model.Title;
 
@@ -87,7 +112,8 @@ public sealed class TransferViewModel : ObservableObject
     /// <summary>Pushes the latest model state into the UI. Called on the dispatcher thread.</summary>
     public void Refresh() => RaiseAll(
         nameof(Percent), nameof(IsActive), nameof(IsIndeterminate), nameof(SizeText), nameof(DetailText),
-        nameof(StatusText), nameof(ErrorText), nameof(IsFaulted), nameof(IsCompleted), nameof(CanOpenFolder));
+        nameof(StatusText), nameof(ErrorText), nameof(IsFaulted), nameof(IsCompleted), nameof(CanOpenFolder),
+        nameof(CanRetry), nameof(CanDelete));
 
     private void OpenDestination()
     {
