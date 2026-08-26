@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms is enabled only for its System tray support (NotifyIcon), isolated in TrayIcon.cs. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>ShareBridge</AssemblyName>
+    <RootNamespace>ShareBridge.Wpf</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\appicon.ico</ApplicationIcon>
+    <LangVersion>latest</LangVersion>
+    <!-- DPI is set in app.manifest for the WPF host; the WinForms analyzer flag is N/A here. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+
+    <Version>1.4.0</Version>
+    <AssemblyVersion>1.4.0.0</AssemblyVersion>
+    <FileVersion>1.4.0.0</FileVersion>
+    <InformationalVersion>1.4.0</InformationalVersion>
+    <Product>ShareBridge</Product>
+    <Company>ShareBridge</Company>
+    <Description>LAN file and message sharing for Windows.</Description>
+    <Copyright>Copyright © 2026</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Shipped as a resource too, so the window chrome can bind to it explicitly. -->
+    <Resource Include="Assets\appicon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WinForms is on only for NotifyIcon; keep its namespaces out of the global usings
+         so WPF types (Application, Brush, KeyEventArgs, DragEventArgs) stay unambiguous.
+         TrayIcon.cs imports System.Drawing / System.Windows.Forms explicitly. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ShareBridge.Core\ShareBridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>
