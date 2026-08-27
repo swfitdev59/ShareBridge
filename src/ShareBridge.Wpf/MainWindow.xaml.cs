@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using ShareBridge.Core;
+using ShareBridge.Wpf.Infrastructure;
 using ShareBridge.Wpf.ViewModels;
 using ShareBridge.Wpf.Views;
 
@@ -31,6 +32,10 @@ public partial class MainWindow : Window
         {
             RequestPickFiles = PickFiles,
             RequestPickFolder = PickFolder,
+            RequestPickImages = PickImages,
+            RequestViewImage = ViewImage,
+            RequestSaveImage = SaveImage,
+            RequestFocusComposer = FocusComposer,
             RequestExport = ExportConversation,
             RequestSettings = ShowSettings,
             RequestOfferDecision = AskAboutOfferAsync,
@@ -193,6 +198,26 @@ public partial class MainWindow : Window
         await _viewModel.SendPathsAsync(dialog.FolderNames);
     }
 
+    /// <summary>
+    /// Pictures do not go straight out: they land in the composer as thumbnails, so the
+    /// user sees exactly what will be sent and can add a caption or back out.
+    /// </summary>
+    private void PickImages()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Choose pictures to send",
+            Multiselect = true,
+            Filter = "Pictures|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.tif;*.tiff|All files (*.*)|*.*",
+        };
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        if (_viewModel.AttachImages(dialog.FileNames) > 0)
+            Composer.Focus();
+    }
+
     private void ExportConversation()
     {
         if (_viewModel.SelectedPeer is null)
@@ -292,11 +317,125 @@ public partial class MainWindow : Window
     }
 
     // -----------------------------------------------------------------------
+    // Pictures
+    // -----------------------------------------------------------------------
+
+    /// <summary>Opens a bubble's picture full size, alongside the conversation.</summary>
+    private void ViewImage(MessageViewModel message)
+    {
+        if (message.ImagePath is null || !message.ImageReady)
+            return;
+
+        new ImageViewerWindow(message.ImagePath, message.SuggestedSaveName, message.ImageDetailText)
+        {
+            Owner = this,
+        }.Show();
+    }
+
+    private void SaveImage(MessageViewModel message)
+    {
+        var outcome = PictureActions.SaveCopy(this, message.ImagePath, message.SuggestedSaveName);
+        if (outcome is not null)
+            _viewModel.Report(outcome);
+    }
+
+    private void OnClearAttachments(object sender, RoutedEventArgs e) => _viewModel.ClearPendingImages();
+
+    /// <summary>
+    /// Ctrl+V anywhere in the window. This runs as a tunnelling preview on the window, ahead
+    /// of the composer and ahead of WPF's own Ctrl+V → Paste translation: a TextBox will not
+    /// run Paste at all for a payload with no text in it, so a plain screenshot never reaches
+    /// a handler further down. Leaving the key unhandled lets an ordinary text paste proceed.
+    /// </summary>
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.V || Keyboard.Modifiers != ModifierKeys.Control || _viewModel.SelectedPeer is null)
+            return;
+
+        if (TryAttachClipboardPicture())
+            e.Handled = true;
+    }
+
+    /// <summary>
+    /// Stages whatever picture the clipboard holds. Returns true once the paste has been
+    /// dealt with — including when the picture turned out to be unreadable, which is
+    /// reported rather than silently falling through to a text paste.
+    /// </summary>
+    private bool TryAttachClipboardPicture()
+    {
+        IDataObject? data;
+        try
+        {
+            data = Clipboard.GetDataObject();
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            // Another app is holding the clipboard open.
+            _viewModel.Report("The clipboard is busy — try that again.");
+            return false;
+        }
+
+        if (data is null)
+            return false;
+
+        // Files first: pasting a copied .png keeps its name and its original bytes.
+        var files = ImageTools.PictureFiles(data);
+        if (files.Count > 0)
+        {
+            if (_viewModel.AttachImages(files) > 0)
+                Composer.Focus();
+
+            return true;
+        }
+
+        var hasText = data.GetDataPresent(DataFormats.UnicodeText);
+
+        if (ImageTools.HasBitmap(data))
+        {
+            // Copying a table or a rich selection puts a bitmap *and* text on the clipboard,
+            // and there the text is what the user meant.
+            if (hasText)
+                return false;
+
+            var bitmap = ImageTools.BitmapFrom(data);
+            if (bitmap is null)
+            {
+                _viewModel.Report("That picture could not be read from the clipboard.");
+                return true;
+            }
+
+            if (_viewModel.AttachImage(bitmap))
+                Composer.Focus();
+
+            return true;
+        }
+
+        if (!hasText)
+            _viewModel.Report("Nothing on the clipboard to attach.");
+
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
     // Composer
     // -----------------------------------------------------------------------
 
+    private void FocusComposer()
+    {
+        Composer.Focus();
+        Composer.CaretIndex = Composer.Text.Length;
+    }
+
     private void OnComposerKeyDown(object sender, KeyEventArgs e)
     {
+        // Esc drops the reply being written, before it drops anything else.
+        if (e.Key == Key.Escape && _viewModel.HasReplyTarget)
+        {
+            _viewModel.CancelReply();
+            e.Handled = true;
+            return;
+        }
+
         // Arrow-Up from an empty composer edits your last message (Slack/Discord style).
         if (e.Key == Key.Up && Keyboard.Modifiers == ModifierKeys.None && string.IsNullOrEmpty(_viewModel.Draft))
         {
@@ -321,8 +460,14 @@ public partial class MainWindow : Window
     private void OnConversationDragOver(object sender, DragEventArgs e)
     {
         var paths = GetDroppedPaths(e);
+        var pictures = ImageTools.PictureFiles(e.Data);
 
-        if (paths.Count == 0 || _viewModel.SelectedPeer is null)
+        // Dropping only pictures stages them for preview; anything else is a file transfer.
+        // Format checks only here — decoding on every mouse move would be far too costly.
+        var asPictures = (paths.Count > 0 && pictures.Count == paths.Count)
+                         || (paths.Count == 0 && ImageTools.HasBitmap(e.Data));
+
+        if ((paths.Count == 0 && !asPictures) || _viewModel.SelectedPeer is null)
         {
             e.Effects = DragDropEffects.None;
             DropOverlay.Visibility = Visibility.Collapsed;
@@ -330,10 +475,22 @@ public partial class MainWindow : Window
         else
         {
             e.Effects = DragDropEffects.Copy;
-            DropText.Text = $"Send to {_viewModel.SelectedPeer.Name}";
-            DropSubText.Text = paths.Count == 1
-                ? Path.GetFileName(paths[0].TrimEnd(Path.DirectorySeparatorChar))
-                : $"{paths.Count} items";
+
+            if (asPictures)
+            {
+                DropText.Text = $"Attach to {_viewModel.SelectedPeer.Name}";
+                DropSubText.Text = pictures.Count > 1
+                    ? $"{pictures.Count} pictures — preview before sending"
+                    : "Preview before sending";
+            }
+            else
+            {
+                DropText.Text = $"Send to {_viewModel.SelectedPeer.Name}";
+                DropSubText.Text = paths.Count == 1
+                    ? Path.GetFileName(paths[0].TrimEnd(Path.DirectorySeparatorChar))
+                    : $"{paths.Count} items";
+            }
+
             DropOverlay.Visibility = Visibility.Visible;
         }
 
@@ -349,8 +506,27 @@ public partial class MainWindow : Window
         e.Handled = true;
 
         var paths = GetDroppedPaths(e);
-        if (paths.Count > 0)
-            await _viewModel.SendPathsAsync(paths);
+        var pictures = ImageTools.PictureFiles(e.Data);
+
+        // Dragged straight out of a browser or an image editor: pixels, no file.
+        if (paths.Count == 0)
+        {
+            var bitmap = ImageTools.BitmapFrom(e.Data);
+            if (bitmap is not null && _viewModel.AttachImage(bitmap))
+                Composer.Focus();
+
+            return;
+        }
+
+        if (pictures.Count == paths.Count)
+        {
+            if (_viewModel.AttachImages(pictures) > 0)
+                Composer.Focus();
+
+            return;
+        }
+
+        await _viewModel.SendPathsAsync(paths);
     }
 
     private static List<string> GetDroppedPaths(DragEventArgs e)

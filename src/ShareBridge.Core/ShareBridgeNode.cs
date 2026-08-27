@@ -1,5 +1,6 @@
 using ShareBridge.Core.Models;
 using ShareBridge.Core.Net;
+using ShareBridge.Core.Persistence;
 
 namespace ShareBridge.Core;
 
@@ -32,8 +33,10 @@ public sealed class ShareBridgeNode : IAsyncDisposable
             Host = Environment.MachineName,
         };
 
+        Media = new MediaStore(AppSettings.MediaFolder);
+
         _discovery = new DiscoveryService(settings, Self);
-        _server = new TransferServer(settings, Self);
+        _server = new TransferServer(settings, Self, Media);
         _client = new TransferClient(Self);
 
         _discovery.PeerDiscovered += (_, e) => PeerDiscovered?.Invoke(this, e);
@@ -45,6 +48,7 @@ public sealed class ShareBridgeNode : IAsyncDisposable
         _server.MessageReceived += OnServerMessageReceived;
         _server.MessageEdited += (_, e) => MessageEdited?.Invoke(this, e);
         _server.MessageDeleted += (_, e) => MessageDeleted?.Invoke(this, e);
+        _server.MessageReacted += (_, e) => MessageReacted?.Invoke(this, e);
         _server.PeerSeen += (_, e) => _discovery.TrackExternal(e.Identity, e.Address);
         _server.TransferStarted += (_, e) => TransferStarted?.Invoke(this, e);
         _server.TransferChanged += (_, e) => TransferChanged?.Invoke(this, e);
@@ -58,6 +62,9 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     public AppSettings Settings { get; }
 
     public PeerIdentity Self { get; }
+
+    /// <summary>Backing store for pictures in conversations, shared by both directions.</summary>
+    public MediaStore Media { get; }
 
     /// <summary>Port the listener actually bound; valid after <see cref="StartAsync"/>.</summary>
     public int ListeningPort => _server.Port;
@@ -77,6 +84,7 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     public event EventHandler<IncomingMessageEventArgs>? MessageReceived;
     public event EventHandler<MessageEditEventArgs>? MessageEdited;
     public event EventHandler<MessageDeleteEventArgs>? MessageDeleted;
+    public event EventHandler<MessageReactionEventArgs>? MessageReacted;
     public event EventHandler<TransferEventArgs>? TransferStarted;
     public event EventHandler<TransferEventArgs>? TransferChanged;
     public event EventHandler<TransferEventArgs>? TransferFinished;
@@ -99,23 +107,15 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     /// outcome. The message keeps its id on the wire, so later edits/deletes match on the
     /// receiver. Never throws for ordinary network failures.
     /// </summary>
-    public async Task<ChatMessage> SendMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default)
-    {
-        message.Status = MessageStatus.Sending;
+    public Task<ChatMessage> SendMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default) =>
+        DeliverAsync(peer, message, "Message", ct);
 
-        try
-        {
-            await _client.SendMessageAsync(peer, message, ct).ConfigureAwait(false);
-            message.Status = MessageStatus.Delivered;
-        }
-        catch (Exception ex)
-        {
-            message.Status = MessageStatus.Failed;
-            Log?.Invoke(this, $"Message to {peer.DisplayLabel} failed: {ex.Message}");
-        }
-
-        return message;
-    }
+    /// <summary>
+    /// Sends a message carrying a picture (see <see cref="ChatMessage.ImagePath"/>). Behaves
+    /// exactly like <see cref="SendMessageAsync"/> from the caller's point of view.
+    /// </summary>
+    public Task<ChatMessage> SendImageAsync(Peer peer, ChatMessage message, CancellationToken ct = default) =>
+        DeliverAsync(peer, message, "Picture", ct);
 
     /// <summary>
     /// Best-effort edit of a delivered message. Returns true if the peer confirmed it;
@@ -150,6 +150,24 @@ public sealed class ShareBridgeNode : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Best-effort reaction on a message, with an empty <paramref name="emoji"/> clearing it.
+    /// Like an edit, the local change stands whether or not the peer hears about it.
+    /// </summary>
+    public async Task<bool> ReactToMessageAsync(Peer peer, string messageId, string emoji, CancellationToken ct = default)
+    {
+        try
+        {
+            await _client.SendReactionAsync(peer, messageId, emoji, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(this, $"Reaction to {peer.DisplayLabel} did not reach them: {ex.Message}");
+            return false;
+        }
+    }
+
     public Task<Transfer> SendFilesAsync(Peer peer, IReadOnlyList<string> paths, CancellationToken ct = default) =>
         _client.SendFilesAsync(peer, paths, ct);
 
@@ -165,18 +183,30 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     /// Resends an existing (failed) message, keeping its id so history and any later
     /// edit/delete still refer to the same message. Updates and returns its status.
     /// </summary>
-    public async Task<ChatMessage> RetryMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default)
+    public Task<ChatMessage> RetryMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default) =>
+        DeliverAsync(peer, message, "Retry", ct);
+
+    /// <summary>
+    /// The one place a message goes on the wire: picks the text or picture path from the
+    /// message itself and folds any failure into its status rather than throwing.
+    /// </summary>
+    private async Task<ChatMessage> DeliverAsync(Peer peer, ChatMessage message, string what, CancellationToken ct)
     {
         message.Status = MessageStatus.Sending;
+
         try
         {
-            await _client.SendMessageAsync(peer, message, ct).ConfigureAwait(false);
+            if (message.HasImage)
+                await _client.SendImageAsync(peer, message, ct).ConfigureAwait(false);
+            else
+                await _client.SendMessageAsync(peer, message, ct).ConfigureAwait(false);
+
             message.Status = MessageStatus.Delivered;
         }
         catch (Exception ex)
         {
             message.Status = MessageStatus.Failed;
-            Log?.Invoke(this, $"Retry to {peer.DisplayLabel} failed: {ex.Message}");
+            Log?.Invoke(this, $"{what} to {peer.DisplayLabel} failed: {ex.Message}");
         }
 
         return message;

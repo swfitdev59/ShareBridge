@@ -136,6 +136,18 @@ public sealed class HistoryStore
                         result.Remove(removed);
                     break;
 
+                case HistoryEntry.KindReaction:
+                    if (!string.IsNullOrEmpty(entry.Id) && byId.TryGetValue(entry.Id, out var reacted))
+                    {
+                        // An empty emoji is how a reaction is taken back.
+                        var emoji = string.IsNullOrEmpty(entry.Text) ? null : entry.Text;
+                        if (entry.ReactionIsMine)
+                            reacted.MyReaction = emoji;
+                        else
+                            reacted.PeerReaction = emoji;
+                    }
+                    break;
+
                 default:
                     // A later record for the same id supersedes the earlier one in place
                     // (e.g. a message re-sent on retry moves from Failed to Delivered),
@@ -148,6 +160,13 @@ public sealed class HistoryStore
                         prior.Edited = entry.Edited;
                         prior.Deleted = entry.Deleted;
                         prior.TransferStatus = entry.TransferStatus;
+                        prior.ImagePath = entry.ImagePath;
+                        prior.ImageName = entry.ImageName;
+                        prior.ImageWidth = entry.ImageWidth;
+                        prior.ImageHeight = entry.ImageHeight;
+                        prior.ImageBytes = entry.ImageBytes;
+                        prior.MyReaction = entry.MyReaction;
+                        prior.PeerReaction = entry.PeerReaction;
                     }
                     else
                     {
@@ -177,6 +196,32 @@ public sealed class HistoryStore
             Status = message.Status.ToString(),
             Edited = message.Edited,
             Deleted = message.Deleted,
+            ImagePath = message.ImagePath,
+            ImageName = message.ImageName,
+            ImageWidth = message.ImageWidth,
+            ImageHeight = message.ImageHeight,
+            ImageBytes = message.ImageBytes,
+            ReplyToId = message.ReplyToId,
+            ReplyToPreview = message.ReplyToPreview,
+            ReplyToFromSelf = message.ReplyToFromSelf,
+            MyReaction = message.MyReaction,
+            PeerReaction = message.PeerReaction,
+        });
+    }
+
+    /// <summary>Records one side's emoji on a message; applied on the next load.</summary>
+    public void AppendReaction(string peerId, string messageId, string? emoji, bool mine)
+    {
+        if (!Enabled)
+            return;
+
+        Append(peerId, new HistoryEntry
+        {
+            Kind = HistoryEntry.KindReaction,
+            Id = messageId,
+            Text = emoji ?? string.Empty,
+            ReactionIsMine = mine,
+            Timestamp = DateTimeOffset.Now,
         });
     }
 

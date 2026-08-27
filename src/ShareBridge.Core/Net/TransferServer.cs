@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using ShareBridge.Core.Models;
+using ShareBridge.Core.Persistence;
 using ShareBridge.Core.Protocol;
 
 namespace ShareBridge.Core.Net;
@@ -27,6 +28,14 @@ public sealed class MessageDeleteEventArgs(PeerIdentity from, string messageId) 
     public string MessageId { get; } = messageId;
 }
 
+/// <summary>The peer put, changed or cleared (empty <see cref="Emoji"/>) their reaction.</summary>
+public sealed class MessageReactionEventArgs(PeerIdentity from, string messageId, string emoji) : EventArgs
+{
+    public PeerIdentity From { get; } = from;
+    public string MessageId { get; } = messageId;
+    public string Emoji { get; } = emoji;
+}
+
 public sealed class TransferEventArgs(Transfer transfer) : EventArgs
 {
     public Transfer Transfer { get; } = transfer;
@@ -49,15 +58,17 @@ public sealed class TransferServer : IAsyncDisposable
 
     private readonly AppSettings _settings;
     private readonly PeerIdentity _self;
+    private readonly MediaStore _media;
 
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
 
-    public TransferServer(AppSettings settings, PeerIdentity self)
+    public TransferServer(AppSettings settings, PeerIdentity self, MediaStore media)
     {
         _settings = settings;
         _self = self;
+        _media = media;
     }
 
     /// <summary>The port actually bound, which differs from the configured one when it was taken.</summary>
@@ -75,6 +86,8 @@ public sealed class TransferServer : IAsyncDisposable
     public event EventHandler<MessageEditEventArgs>? MessageEdited;
 
     public event EventHandler<MessageDeleteEventArgs>? MessageDeleted;
+
+    public event EventHandler<MessageReactionEventArgs>? MessageReacted;
 
     /// <summary>Raised before an offer is surfaced, so the sender can be registered as a peer first.</summary>
     public event EventHandler<PeerSeenEventArgs>? PeerSeen;
@@ -160,12 +173,20 @@ public sealed class TransferServer : IAsyncDisposable
                         await HandleMessageAsync(stream, payload, remote, ct).ConfigureAwait(false);
                         break;
 
+                    case FrameKind.Image:
+                        await HandleImageAsync(stream, payload, remote, ct).ConfigureAwait(false);
+                        break;
+
                     case FrameKind.MessageEdit:
                         await HandleEditAsync(stream, payload, remote, ct).ConfigureAwait(false);
                         break;
 
                     case FrameKind.MessageDelete:
                         await HandleDeleteAsync(stream, payload, remote, ct).ConfigureAwait(false);
+                        break;
+
+                    case FrameKind.Reaction:
+                        await HandleReactionAsync(stream, payload, remote, ct).ConfigureAwait(false);
                         break;
 
                     case FrameKind.Offer:
@@ -197,11 +218,111 @@ public sealed class TransferServer : IAsyncDisposable
             Direction = MessageDirection.Incoming,
             Timestamp = frame.SentAt,
             Status = MessageStatus.Delivered,
+            ReplyToId = frame.ReplyToId,
+            ReplyToPreview = frame.ReplyToPreview,
+
+            // "From self" is written from the sender's point of view; here, their own
+            // message is the other person's.
+            ReplyToFromSelf = !frame.ReplyToFromSelf,
         };
 
         await FrameIO.WriteFrameAsync(stream, new MessageAckFrame { Id = message.Id }, ct).ConfigureAwait(false);
 
         MessageReceived?.Invoke(this, new IncomingMessageEventArgs(frame.From, remote, message));
+    }
+
+    /// <summary>
+    /// Takes a picture straight into the media store. Pictures are chat content, so they are
+    /// accepted without a prompt — but only within the size cap and only when the name looks
+    /// like a picture, so this path can never be used to drop an arbitrary file on disk.
+    /// </summary>
+    private async Task HandleImageAsync(Stream stream, byte[] payload, IPAddress remote, CancellationToken ct)
+    {
+        var frame = FrameIO.Decode<ImageFrame>(payload);
+
+        var rejection = ValidateImage(frame);
+        if (rejection is not null)
+        {
+            await FrameIO.WriteFrameAsync(stream, new OfferResultFrame { Accept = false, Reason = rejection }, ct)
+                .ConfigureAwait(false);
+            Log?.Invoke(this, $"Refused a picture from {remote}: {rejection}");
+            return;
+        }
+
+        // Say yes before the bytes start moving, so a refusal above never lands mid-stream.
+        await FrameIO.WriteFrameAsync(stream, new OfferResultFrame { Accept = true }, ct).ConfigureAwait(false);
+
+        var peerName = string.IsNullOrWhiteSpace(frame.From.Name) ? remote.ToString() : frame.From.Name;
+        var target = _media.Reserve(peerName, frame.FileName);
+
+        try
+        {
+            await using (var file = new FileStream(
+                             target, FileMode.Create, FileAccess.Write, FileShare.None,
+                             CopyBufferSize, FileOptions.Asynchronous))
+            {
+                await ReceiveExactlyAsync(stream, file, frame.Size, ct).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            TryDelete(target);
+            throw;
+        }
+
+        var message = new ChatMessage
+        {
+            Id = string.IsNullOrEmpty(frame.Id) ? Guid.NewGuid().ToString("N") : frame.Id,
+            PeerId = frame.From.Id,
+            Text = frame.Caption ?? string.Empty,
+            Direction = MessageDirection.Incoming,
+            Timestamp = frame.SentAt,
+            Status = MessageStatus.Delivered,
+            ImagePath = target,
+            ImageName = Path.GetFileName(target),
+            ImageWidth = frame.Width,
+            ImageHeight = frame.Height,
+            ImageBytes = frame.Size,
+            ReplyToId = frame.ReplyToId,
+            ReplyToPreview = frame.ReplyToPreview,
+            ReplyToFromSelf = !frame.ReplyToFromSelf,
+        };
+
+        await FrameIO.WriteFrameAsync(stream, new MessageAckFrame { Id = message.Id }, ct).ConfigureAwait(false);
+
+        MessageReceived?.Invoke(this, new IncomingMessageEventArgs(frame.From, remote, message));
+    }
+
+    private static string? ValidateImage(ImageFrame frame)
+    {
+        if (frame.V != Wire.ProtocolVersion)
+            return $"Unsupported protocol version {frame.V}.";
+
+        if (frame.Size <= 0)
+            return "The picture was empty.";
+
+        if (frame.Size > Wire.MaxImageBytes)
+            return $"Pictures are limited to {Wire.MaxImageBytes / (1024 * 1024)} MB here.";
+
+        return MediaStore.IsPictureName(frame.FileName) ? null : $"'{frame.FileName}' is not a picture.";
+    }
+
+    /// <summary>Reads exactly <paramref name="count"/> bytes off the wire into a file.</summary>
+    private static async Task ReceiveExactlyAsync(Stream source, Stream destination, long count, CancellationToken ct)
+    {
+        var buffer = new byte[CopyBufferSize];
+        var remaining = count;
+
+        while (remaining > 0)
+        {
+            var chunk = (int)Math.Min(buffer.Length, remaining);
+            var read = await source.ReadAsync(buffer.AsMemory(0, chunk), ct).ConfigureAwait(false);
+            if (read <= 0)
+                throw new EndOfStreamException($"Sender closed the connection with {remaining} bytes left.");
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            remaining -= read;
+        }
     }
 
     private async Task HandleEditAsync(Stream stream, byte[] payload, IPAddress remote, CancellationToken ct)
@@ -225,6 +346,18 @@ public sealed class TransferServer : IAsyncDisposable
         {
             PeerSeen?.Invoke(this, new PeerSeenEventArgs(frame.From, remote));
             MessageDeleted?.Invoke(this, new MessageDeleteEventArgs(frame.From, frame.Id));
+        }
+    }
+
+    private async Task HandleReactionAsync(Stream stream, byte[] payload, IPAddress remote, CancellationToken ct)
+    {
+        var frame = FrameIO.Decode<ReactionFrame>(payload);
+        await FrameIO.WriteFrameAsync(stream, new MessageAckFrame { Id = frame.Id }, ct).ConfigureAwait(false);
+
+        if (!string.IsNullOrEmpty(frame.Id))
+        {
+            PeerSeen?.Invoke(this, new PeerSeenEventArgs(frame.From, remote));
+            MessageReacted?.Invoke(this, new MessageReactionEventArgs(frame.From, frame.Id, frame.Emoji ?? string.Empty));
         }
     }
 

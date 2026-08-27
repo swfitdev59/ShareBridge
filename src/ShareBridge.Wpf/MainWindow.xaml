@@ -10,7 +10,8 @@
         Background="{StaticResource BackgroundBrush}"
         TextOptions.TextFormattingMode="Ideal"
         FontFamily="Segoe UI"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
 
@@ -71,90 +72,270 @@
                         BorderThickness="1.5"
                         CornerRadius="12,12,12,3"
                         Padding="12,9">
-                    <Grid>
-                        <!-- View mode -->
-                        <StackPanel x:Name="ViewPanel">
-                            <!-- Read-only RichTextBox: selectable/copyable text with in-bubble
-                                 search highlighting. MessageDocument sets its width to the text
-                                 content so the bubble hugs the message. -->
-                            <RichTextBox x:Name="MessageText"
-                                         IsReadOnly="True"
-                                         IsReadOnlyCaretVisible="False"
-                                         IsDocumentEnabled="True"
-                                         IsTabStop="False"
-                                         HorizontalAlignment="Left"
-                                         BorderThickness="0"
-                                         Background="Transparent"
-                                         Padding="0"
-                                         Foreground="{StaticResource TextBrush}"
-                                         FontSize="13"
-                                         VerticalScrollBarVisibility="Disabled"
-                                         HorizontalScrollBarVisibility="Disabled"
-                                         Cursor="IBeam"
-                                         SelectionBrush="{StaticResource AccentBrush}"
-                                         infra:WheelToParent.Enabled="True"
-                                         infra:MessageDocument.Text="{Binding Text}"
-                                         infra:MessageDocument.Query="{Binding DataContext.SearchTerm, RelativeSource={RelativeSource AncestorType=Window}}">
-                                <RichTextBox.ContextMenu>
-                                    <ContextMenu>
-                                        <MenuItem Header="Copy" Command="{Binding CopyCommand}" />
-                                        <Separator Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
-                                        <MenuItem Header="Edit" Command="{Binding BeginEditCommand}"
-                                                  Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
-                                        <MenuItem Header="Delete" Command="{Binding DeleteCommand}"
-                                                  Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
-                                    </ContextMenu>
-                                </RichTextBox.ContextMenu>
-                            </RichTextBox>
-                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0" HorizontalAlignment="Right">
-                                <TextBlock Text="edited"
-                                           Style="{StaticResource DimText}"
-                                           FontSize="10" FontStyle="Italic"
-                                           Margin="0,0,6,0"
-                                           Visibility="{Binding Edited, Converter={StaticResource BoolToVisibility}}" />
-                                <TextBlock x:Name="Status"
-                                           Text="{Binding StatusText}"
-                                           Style="{StaticResource DimText}"
-                                           FontSize="10"
-                                           Margin="0,0,6,0"
-                                           Visibility="{Binding StatusText, Converter={StaticResource StringToVisibility}}" />
-                                <TextBlock Text="{Binding TimestampText}"
-                                           Style="{StaticResource DimText}"
-                                           FontSize="10" />
+                    <!-- The picture sits above the view/edit swap, so it stays on screen
+                         while its caption is being edited. -->
+                    <StackPanel>
+                        <!-- What this message is answering. Clicking it goes to the original. -->
+                        <Border x:Name="QuotedBlock" Visibility="Collapsed"
+                                Background="#26FFFFFF" CornerRadius="6"
+                                Padding="8,5" Margin="0,0,0,6"
+                                Cursor="Hand"
+                                ToolTip="Go to the message this replies to">
+                            <Border.InputBindings>
+                                <MouseBinding MouseAction="LeftClick" Command="{Binding OpenReplyCommand}" />
+                            </Border.InputBindings>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Grid.Column="0" Fill="{StaticResource AccentBrush}"
+                                           RadiusX="1.5" RadiusY="1.5" />
+                                <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                    <TextBlock Text="{Binding ReplyAuthor}"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               FontSize="11" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding ReplyPreview}"
+                                               Style="{StaticResource DimText}" FontSize="11"
+                                               MaxWidth="300" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- Picture, when the message carries one. Clicking it opens the
+                             full-size viewer; the caption (if any) renders below as text. -->
+                        <StackPanel x:Name="PicturePanel" Visibility="Collapsed" Margin="0,0,0,2">
+                                <Border CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left"
+                                        Background="{StaticResource BackgroundBrush}">
+                                    <Image Source="{Binding Preview}"
+                                           MaxWidth="320" MaxHeight="320"
+                                           Stretch="Uniform" StretchDirection="DownOnly"
+                                           Cursor="Hand"
+                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                           ToolTip="Click to view full size">
+                                        <Image.InputBindings>
+                                            <MouseBinding MouseAction="LeftClick" Command="{Binding OpenImageCommand}" />
+                                        </Image.InputBindings>
+                                        <Image.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Reply" Command="{Binding ReplyCommand}" />
+                                                <MenuItem Header="React…" Command="{Binding OpenReactionPickerCommand}" />
+                                                <Separator />
+                                                <MenuItem Header="Open" Command="{Binding OpenImageCommand}" />
+                                                <MenuItem Header="Copy image" Command="{Binding CopyImageCommand}" />
+                                                <MenuItem Header="Save as…" Command="{Binding SaveImageCommand}" />
+                                                <MenuItem Header="Show in folder" Command="{Binding ShowInFolderCommand}" />
+                                                <Separator Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                                <MenuItem Header="Edit caption" Command="{Binding BeginEditCommand}"
+                                                          Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                                <MenuItem Header="Delete" Command="{Binding DeleteCommand}"
+                                                          Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                            </ContextMenu>
+                                        </Image.ContextMenu>
+                                    </Image>
+                                </Border>
+
+                                <TextBlock Text="{Binding ImageDetailText}"
+                                           Style="{StaticResource DimText}" FontSize="10"
+                                           Margin="2,4,0,0"
+                                           Visibility="{Binding ImageDetailText, Converter={StaticResource StringToVisibility}}" />
                             </StackPanel>
 
-                            <!-- Retry appears under a message that failed to send. -->
-                            <Button Content="↻ Retry"
-                                    Style="{StaticResource GhostButton}"
-                                    Padding="10,3" FontSize="11"
-                                    HorizontalAlignment="Right" Margin="0,5,0,0"
-                                    Command="{Binding RetryCommand}"
-                                    Visibility="{Binding IsFailed, Converter={StaticResource BoolToVisibility}}" />
-                        </StackPanel>
-
-                        <!-- Edit mode -->
-                        <StackPanel x:Name="EditPanel" Visibility="Collapsed" MinWidth="240">
-                            <TextBox Style="{StaticResource AppTextBox}"
-                                     Padding="8,6"
-                                     Text="{Binding EditDraft, UpdateSourceTrigger=PropertyChanged}"
-                                     infra:FocusOnVisible.Enabled="True">
-                                <TextBox.InputBindings>
-                                    <KeyBinding Key="Enter" Command="{Binding CommitEditCommand}" />
-                                    <KeyBinding Key="Escape" Command="{Binding CancelEditCommand}" />
-                                </TextBox.InputBindings>
-                            </TextBox>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
-                                <Button Content="Cancel" Style="{StaticResource GhostButton}"
-                                        Padding="10,4" Margin="0,0,6,0"
-                                        Command="{Binding CancelEditCommand}" />
-                                <Button Content="Save" Style="{StaticResource PrimaryButton}"
-                                        Padding="12,4"
-                                        Command="{Binding CommitEditCommand}" />
+                        <!-- The picture's file went missing (moved, or cleaned up by hand). -->
+                        <Border x:Name="MissingPicture" Visibility="Collapsed"
+                                HorizontalAlignment="Left" Margin="0,0,0,4"
+                                Background="{StaticResource SurfaceBrush}"
+                                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="8" Padding="14,20" MinWidth="200">
+                            <StackPanel>
+                                <TextBlock Text="🖼" FontSize="20" HorizontalAlignment="Center" />
+                                <TextBlock Text="Picture is no longer on disk"
+                                           Style="{StaticResource DimText}" FontSize="11"
+                                           Margin="0,6,0,0" HorizontalAlignment="Center" />
+                                <TextBlock Text="{Binding ImageName}"
+                                           Style="{StaticResource DimText}" FontSize="10"
+                                           MaxWidth="240" TextTrimming="CharacterEllipsis"
+                                           Margin="0,2,0,0" HorizontalAlignment="Center" />
                             </StackPanel>
-                            <TextBlock Text="Enter to save · Esc to cancel"
-                                       Style="{StaticResource DimText}" FontSize="10" Margin="2,5,0,0" />
-                        </StackPanel>
-                    </Grid>
+                        </Border>
+
+                        <Grid>
+                            <!-- View mode -->
+                            <StackPanel x:Name="ViewPanel">
+                                <!-- Read-only RichTextBox: selectable/copyable text with in-bubble
+                                     search highlighting. MessageDocument sets its width to the text
+                                     content so the bubble hugs the message. -->
+                                <RichTextBox x:Name="MessageText"
+                                             IsReadOnly="True"
+                                             IsReadOnlyCaretVisible="False"
+                                             IsDocumentEnabled="True"
+                                             IsTabStop="False"
+                                             HorizontalAlignment="Left"
+                                             BorderThickness="0"
+                                             Background="Transparent"
+                                             Padding="0"
+                                             Foreground="{StaticResource TextBrush}"
+                                             FontSize="13"
+                                             VerticalScrollBarVisibility="Disabled"
+                                             HorizontalScrollBarVisibility="Disabled"
+                                             Cursor="IBeam"
+                                             SelectionBrush="{StaticResource AccentBrush}"
+                                             infra:WheelToParent.Enabled="True"
+                                             infra:MessageDocument.Text="{Binding Text}"
+                                             infra:MessageDocument.Query="{Binding DataContext.SearchTerm, RelativeSource={RelativeSource AncestorType=Window}}">
+                                    <RichTextBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="Reply" Command="{Binding ReplyCommand}" />
+                                            <MenuItem Header="React…" Command="{Binding OpenReactionPickerCommand}" />
+                                            <Separator />
+                                            <MenuItem Header="Copy" Command="{Binding CopyCommand}" />
+                                            <MenuItem Header="Copy image" Command="{Binding CopyImageCommand}"
+                                                      Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                                            <MenuItem Header="Save image as…" Command="{Binding SaveImageCommand}"
+                                                      Visibility="{Binding HasImage, Converter={StaticResource BoolToVisibility}}" />
+                                            <Separator Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                            <MenuItem Header="Edit" Command="{Binding BeginEditCommand}"
+                                                      Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                            <MenuItem Header="Delete" Command="{Binding DeleteCommand}"
+                                                      Visibility="{Binding CanModify, Converter={StaticResource BoolToVisibility}}" />
+                                        </ContextMenu>
+                                    </RichTextBox.ContextMenu>
+                                </RichTextBox>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0" HorizontalAlignment="Right">
+                                    <!-- Revealed on hover, so idle bubbles stay clean. -->
+                                    <Button x:Name="ReactButton"
+                                            Style="{StaticResource IconButton}"
+                                            Background="Transparent" BorderThickness="0"
+                                            Width="22" Height="18" Padding="0" Margin="0,0,6,0"
+                                            Visibility="Collapsed"
+                                            Command="{Binding OpenReactionPickerCommand}"
+                                            ToolTip="React">
+                                        <TextBlock Text="🙂" FontFamily="Segoe UI Emoji" FontSize="11" />
+                                    </Button>
+                                    <TextBlock Text="edited"
+                                               Style="{StaticResource DimText}"
+                                               FontSize="10" FontStyle="Italic"
+                                               Margin="0,0,6,0"
+                                               Visibility="{Binding Edited, Converter={StaticResource BoolToVisibility}}" />
+                                    <TextBlock x:Name="Status"
+                                               Text="{Binding StatusText}"
+                                               Style="{StaticResource DimText}"
+                                               FontSize="10"
+                                               Margin="0,0,6,0"
+                                               Visibility="{Binding StatusText, Converter={StaticResource StringToVisibility}}" />
+                                    <TextBlock Text="{Binding TimestampText}"
+                                               Style="{StaticResource DimText}"
+                                               FontSize="10" />
+                                </StackPanel>
+
+                                <!-- Retry appears under a message that failed to send. -->
+                                <Button Content="↻ Retry"
+                                        Style="{StaticResource GhostButton}"
+                                        Padding="10,3" FontSize="11"
+                                        HorizontalAlignment="Right" Margin="0,5,0,0"
+                                        Command="{Binding RetryCommand}"
+                                        Visibility="{Binding IsFailed, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+
+                            <!-- Edit mode -->
+                            <StackPanel x:Name="EditPanel" Visibility="Collapsed" MinWidth="240">
+                                <TextBox Style="{StaticResource AppTextBox}"
+                                         Padding="8,6"
+                                         Text="{Binding EditDraft, UpdateSourceTrigger=PropertyChanged}"
+                                         infra:FocusOnVisible.Enabled="True">
+                                    <TextBox.InputBindings>
+                                        <KeyBinding Key="Enter" Command="{Binding CommitEditCommand}" />
+                                        <KeyBinding Key="Escape" Command="{Binding CancelEditCommand}" />
+                                    </TextBox.InputBindings>
+                                </TextBox>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
+                                    <Button Content="Cancel" Style="{StaticResource GhostButton}"
+                                            Padding="10,4" Margin="0,0,6,0"
+                                            Command="{Binding CancelEditCommand}" />
+                                    <Button Content="Save" Style="{StaticResource PrimaryButton}"
+                                            Padding="12,4"
+                                            Command="{Binding CommitEditCommand}" />
+                                </StackPanel>
+                                <TextBlock Text="Enter to save · Esc to cancel"
+                                           Style="{StaticResource DimText}" FontSize="10" Margin="2,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Reactions sit at the foot of the bubble. Clicking one puts your
+                             own emoji on, or takes it back if it was already yours. -->
+                        <ItemsControl ItemsSource="{Binding ReactionChips}"
+                                      Margin="0,6,0,0"
+                                      HorizontalAlignment="Left"
+                                      Visibility="{Binding HasReactions, Converter={StaticResource BoolToVisibility}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:ReactionChip}">
+                                    <Border x:Name="Chip"
+                                            Background="{StaticResource SurfaceBrush}"
+                                            BorderBrush="Transparent" BorderThickness="1"
+                                            CornerRadius="10" Padding="7,2" Margin="0,0,5,0"
+                                            Cursor="Hand">
+                                        <Border.InputBindings>
+                                            <MouseBinding MouseAction="LeftClick" Command="{Binding Toggle}" />
+                                        </Border.InputBindings>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Emoji}"
+                                                       Style="{StaticResource EmojiText}" FontSize="12" />
+                                            <TextBlock Text="{Binding CountText}"
+                                                       Style="{StaticResource DimText}" FontSize="11"
+                                                       Margin="4,0,0,0" VerticalAlignment="Center"
+                                                       Visibility="{Binding CountText, Converter={StaticResource StringToVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding Mine}" Value="True">
+                                            <Setter TargetName="Chip" Property="BorderBrush"
+                                                    Value="{StaticResource AccentBrush}" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- Emoji picker, anchored to the bubble itself so it lands in the
+                             same place whether it was opened from the button or the menu. -->
+                        <Popup IsOpen="{Binding IsReactionPickerOpen, Mode=TwoWay}"
+                               PlacementTarget="{Binding ElementName=Bubble}"
+                               Placement="Top"
+                               StaysOpen="False"
+                               AllowsTransparency="True"
+                               PopupAnimation="Fade">
+                            <Border Background="{StaticResource SurfaceAltBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="21" Padding="6,4" Margin="8">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="Black" BlurRadius="12" ShadowDepth="2" Opacity="0.5" />
+                                </Border.Effect>
+                                <ItemsControl ItemsSource="{Binding Source={x:Static vm:MessageViewModel.ReactionChoices}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Style="{StaticResource EmojiButton}"
+                                                    Command="{Binding DataContext.ReactCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}">
+                                                <TextBlock Text="{Binding}"
+                                                           Style="{StaticResource EmojiText}" FontSize="19" />
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+                        </Popup>
+                    </StackPanel>
                 </Border>
             </Grid>
 
@@ -163,6 +344,25 @@
                     <Setter TargetName="Bubble" Property="HorizontalAlignment" Value="Right" />
                     <Setter TargetName="Bubble" Property="Background" Value="{StaticResource AccentSoftBrush}" />
                     <Setter TargetName="Bubble" Property="CornerRadius" Value="12,12,3,12" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsReply}" Value="True">
+                    <Setter TargetName="QuotedBlock" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <Trigger SourceName="Bubble" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="ReactButton" Property="Visibility" Value="Visible" />
+                </Trigger>
+                <DataTrigger Binding="{Binding IsReactionPickerOpen}" Value="True">
+                    <Setter TargetName="ReactButton" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ImageReady}" Value="True">
+                    <Setter TargetName="PicturePanel" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ImageMissing}" Value="True">
+                    <Setter TargetName="MissingPicture" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <!-- A picture sent without a caption has no text row at all. -->
+                <DataTrigger Binding="{Binding HasText}" Value="False">
+                    <Setter TargetName="MessageText" Property="Visibility" Value="Collapsed" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsFailed}" Value="True">
                     <Setter TargetName="Status" Property="Foreground" Value="{StaticResource DangerBrush}" />
@@ -463,7 +663,7 @@
                     <TextBlock Text="Pick someone from the list"
                                Style="{StaticResource TitleText}" FontSize="16"
                                HorizontalAlignment="Center" />
-                    <TextBlock Text="Then type a message, or drop files anywhere in this panel to send them."
+                    <TextBlock Text="Then type a message, paste a screenshot, or drop files anywhere in this panel to send them."
                                Style="{StaticResource DimText}" Margin="0,8,0,0"
                                TextAlignment="Center" MaxWidth="360" TextWrapping="Wrap" />
                 </StackPanel>
@@ -473,52 +673,139 @@
                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0"
                         Visibility="{Binding SelectedPeer, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}">
                     <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
-                        <TextBox x:Name="Composer"
-                                 Grid.Column="0"
-                                 Style="{StaticResource AppTextBox}"
-                                 Text="{Binding Draft, UpdateSourceTrigger=PropertyChanged}"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 MaxHeight="120"
-                                 VerticalScrollBarVisibility="Auto"
-                                 PreviewKeyDown="OnComposerKeyDown"
-                                 ToolTip="Enter to send, Shift+Enter for a new line" />
+                        <!-- The message being answered. Esc, or the ✕, drops it. -->
+                        <Border Grid.Row="0" Margin="0,0,0,8"
+                                Background="{StaticResource SurfaceAltBrush}"
+                                CornerRadius="6" Padding="10,6"
+                                Visibility="{Binding HasReplyTarget, Converter={StaticResource BoolToVisibility}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
 
-                        <!-- Attach: files and folders each get their own native picker, so
-                             neither dialog needs a placeholder parked in its name box. What
-                             comes back is classified by path, the same way dropped items are. -->
-                        <Button x:Name="AttachButton"
-                                Grid.Column="1"
-                                Style="{StaticResource IconButton}"
-                                Width="35" Height="35"
-                                Margin="10,0,0,0"
-                                VerticalAlignment="Bottom"
-                                IsEnabled="{Binding HasSelection}"
-                                Click="OnAttachClick"
-                                ToolTip="Attach files or a folder">
-                            <Button.ContextMenu>
-                                <ContextMenu Placement="Top" HorizontalOffset="-8">
-                                    <MenuItem Header="Files…" Command="{Binding AttachFilesCommand}" />
-                                    <MenuItem Header="Folder…" Command="{Binding AttachFolderCommand}" />
-                                </ContextMenu>
-                            </Button.ContextMenu>
-                            <Path Width="17" Height="17" Stretch="Uniform"
-                                  Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                  Data="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5z" />
-                        </Button>
+                                <Rectangle Grid.Column="0" Fill="{StaticResource AccentBrush}"
+                                           RadiusX="1.5" RadiusY="1.5" />
 
-                        <Button Grid.Column="2" Content="Send"
-                                Style="{StaticResource PrimaryButton}"
-                                Margin="8,0,0,0" MinWidth="82"
-                                Height="35"
-                                VerticalAlignment="Bottom"
-                                Command="{Binding SendMessageCommand}" />
+                                <StackPanel Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding ReplyTargetAuthor}"
+                                               Foreground="{StaticResource AccentBrush}"
+                                               FontSize="11" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding ReplyTargetPreview}"
+                                               Style="{StaticResource DimText}" FontSize="11"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+
+                                <Button Grid.Column="2" Content="✕"
+                                        Style="{StaticResource IconButton}"
+                                        Background="Transparent" BorderThickness="0"
+                                        Width="22" Height="22" FontSize="11"
+                                        VerticalAlignment="Center"
+                                        Command="{Binding CancelReplyCommand}"
+                                        ToolTip="Cancel the reply (Esc)" />
+                            </Grid>
+                        </Border>
+
+                        <!-- Staged pictures. Nothing is written to disk or sent until the
+                             message goes out, so removing one here leaves no trace. -->
+                        <StackPanel Grid.Row="1" Margin="0,0,0,10"
+                                    Visibility="{Binding HasPendingImages, Converter={StaticResource BoolToVisibility}}">
+                            <Grid Margin="2,0,0,6">
+                                <TextBlock Text="{Binding PendingImagesText}" Style="{StaticResource DimText}"
+                                           FontSize="11" VerticalAlignment="Center" />
+                                <Button Content="Remove all" Style="{StaticResource GhostButton}"
+                                        Padding="8,2" FontSize="11"
+                                        HorizontalAlignment="Right"
+                                        Click="OnClearAttachments" />
+                            </Grid>
+
+                            <ItemsControl ItemsSource="{Binding PendingImages}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:PendingImageViewModel}">
+                                        <Grid Width="76" Height="76" Margin="0,0,8,0"
+                                              ToolTip="{Binding ToolTipText}">
+                                            <Border CornerRadius="8" ClipToBounds="True"
+                                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                                    Background="{StaticResource SurfaceBrush}">
+                                                <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"
+                                                       RenderOptions.BitmapScalingMode="HighQuality" />
+                                            </Border>
+                                            <Button Content="✕"
+                                                    Style="{StaticResource IconButton}"
+                                                    Width="20" Height="20" FontSize="10"
+                                                    Margin="0,3,3,0"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                    Background="{StaticResource BackgroundBrush}"
+                                                    Command="{Binding RemoveCommand}"
+                                                    ToolTip="Remove this picture" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <Grid Grid.Row="2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox x:Name="Composer"
+                                     Grid.Column="0"
+                                     Style="{StaticResource AppTextBox}"
+                                     Text="{Binding Draft, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MaxHeight="120"
+                                     VerticalScrollBarVisibility="Auto"
+                                     PreviewKeyDown="OnComposerKeyDown"
+                                     ToolTip="Enter to send, Shift+Enter for a new line, Ctrl+V to paste a screenshot" />
+
+                            <!-- Attach: pictures, files and folders each get their own native
+                                 picker, so no dialog needs a placeholder parked in its name box.
+                                 What comes back is classified by path, like dropped items. -->
+                            <Button x:Name="AttachButton"
+                                    Grid.Column="1"
+                                    Style="{StaticResource IconButton}"
+                                    Width="35" Height="35"
+                                    Margin="10,0,0,0"
+                                    VerticalAlignment="Bottom"
+                                    IsEnabled="{Binding HasSelection}"
+                                    Click="OnAttachClick"
+                                    ToolTip="Attach a picture, files or a folder">
+                                <Button.ContextMenu>
+                                    <ContextMenu Placement="Top" HorizontalOffset="-8">
+                                        <MenuItem Header="Picture…" Command="{Binding AttachImagesCommand}" />
+                                        <Separator />
+                                        <MenuItem Header="Files…" Command="{Binding AttachFilesCommand}" />
+                                        <MenuItem Header="Folder…" Command="{Binding AttachFolderCommand}" />
+                                    </ContextMenu>
+                                </Button.ContextMenu>
+                                <Path Width="17" Height="17" Stretch="Uniform"
+                                      Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      Data="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5z" />
+                            </Button>
+
+                            <Button Grid.Column="2" Content="Send"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Margin="8,0,0,0" MinWidth="82"
+                                    Height="35"
+                                    VerticalAlignment="Bottom"
+                                    Command="{Binding SendMessageCommand}" />
+                        </Grid>
                     </Grid>
                 </Border>
 

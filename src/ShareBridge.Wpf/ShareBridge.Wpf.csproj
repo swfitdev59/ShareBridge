@@ -16,10 +16,10 @@
     <!-- DPI is set in app.manifest for the WPF host; the WinForms analyzer flag is N/A here. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
 
-    <Version>1.8.0</Version>
-    <AssemblyVersion>1.8.0.0</AssemblyVersion>
-    <FileVersion>1.8.0.0</FileVersion>
-    <InformationalVersion>1.8.0</InformationalVersion>
+    <Version>1.9.0</Version>
+    <AssemblyVersion>1.9.0.0</AssemblyVersion>
+    <FileVersion>1.9.0.0</FileVersion>
+    <InformationalVersion>1.9.0</InformationalVersion>
     <Product>ShareBridge</Product>
     <Company>ShareBridge</Company>
     <Description>LAN file and message sharing for Windows.</Description>

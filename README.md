@@ -11,10 +11,24 @@ directly between machines over TCP. No server, no account, no cloud.
 - **Text chat** — one conversation per peer, with sent / delivered / failed status.
   Message text is selectable and copyable (drag-select + Ctrl+C, or right-click → Copy).
   A message or file that fails to send shows a **Retry** button to try again.
+- **Replies** — right-click any message → **Reply** to answer it. The message being
+  answered sits above the message box until you send (Esc drops it), and the reply arrives
+  carrying a quote of it; click that quote to jump to the original. The quoted line travels
+  with the reply, so it still reads correctly if the original is later deleted.
+- **Reactions** — hover a bubble and hit the 🙂 button (or right-click → **React…**) to put
+  an emoji on it. One reaction each: picking another emoji swaps yours, picking the same one
+  takes it back. Reactions show as chips under the bubble — yours outlined — and the same
+  emoji from both sides collapses into one chip with a count.
 - **Edit & delete messages** — right-click one of your own messages to edit it inline or
   delete it; press Arrow-Up in an empty message box to edit your last one. Changes sync to
   the peer: edited messages are marked "edited"; deleted ones leave a "message deleted"
   placeholder on both sides.
+- **Pictures and screenshots** — paste a screenshot straight into the chat (Ctrl+V),
+  drop image files on the conversation, or use **Attach → Picture…**. They stage as
+  thumbnails above the message box, where you can add a caption or drop one before
+  sending, and arrive as inline previews rather than file cards. Click a picture to open
+  it full size, with copy, save-a-copy and show-in-folder. Pictures up to 32 MB are
+  accepted without a prompt, the way a message is; larger ones should go as files.
 - **File and folder transfer** — pick from a dialog or drag-and-drop onto the
   conversation. Folders keep their structure. Live progress, speed and ETA, with cancel.
 - **Accept / reject prompt** — incoming offers ask before writing to disk (auto-accept
@@ -101,7 +115,9 @@ or `win-arm64`.
   multi-NIC hosts are covered. Peers that stop announcing age out after a timeout.
 - **Transport** — TCP on port **47426** (configurable, with ephemeral fallback). Each
   exchange is its own short-lived connection: a length-prefixed JSON frame selects the
-  kind (message, or file offer), and file bytes stream directly after an accepted offer.
+  kind (message, picture, reaction, or file offer), and bytes stream directly after the
+  receiver agrees to take them. Edits, deletes, replies and reactions all refer to a
+  message by the id it was sent under, so both sides stay in step.
 - **Stable identity** — each install has a per-user id (`nodeId` in `settings.json`,
   generated on first run) so a peer keeps the same conversation across restarts. Set the
   `SHAREBRIDGE_ID` environment variable to override it when running several instances on
@@ -116,11 +132,17 @@ Everything lives under `%APPDATA%\ShareBridge\`:
 | Settings (name, ports, download folder, flags, `nodeId`) | `settings.json` |
 | Chat history — one transcript per peer (newline-delimited JSON) | `history\<peerId>.jsonl` |
 | Known-peer index (so past conversations reopen offline) | `history\peers.json` |
+| Pictures sent and received in chat | `media\<peer>\` |
 | Received files | your download folder (default `%USERPROFILE%\Downloads\ShareBridge\<sender>\`) |
 
 History can be disabled in Settings (nothing is written when off), cleared for one
 conversation (the **Clear** button in a chat), or wiped entirely (**Clear all history**
 in Settings). Transcripts never leave the machine.
+
+Pictures are kept in the media folder rather than the download folder, so screenshots do
+not pile up among your real downloads — **Save as…** on a picture is how one gets out.
+A picture you send is copied in, so its bubble survives the original being moved; clearing
+a conversation (or all history) deletes the pictures that went with it.
 
 ## Safety notes
 
@@ -129,6 +151,8 @@ in Settings). Transcripts never leave the machine.
 - Files are written to a `.sbpart` temp name and moved into place only on success, so an
   interrupted transfer never leaves a half-written file under the real name.
 - Frame sizes are capped to keep a malformed or hostile peer from forcing large allocations.
+- Inline pictures are capped at 32 MB and must be named as a picture, so the no-prompt
+  path cannot be used to drop an arbitrary file (or a huge one) on your disk.
 
 This is a LAN tool with no authentication or encryption — run it on networks you trust.
 On first run, allow it through Windows Firewall on your **private** network so discovery

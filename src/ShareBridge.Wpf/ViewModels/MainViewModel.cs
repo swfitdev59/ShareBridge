@@ -4,11 +4,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using ShareBridge.Core;
 using ShareBridge.Core.Models;
 using ShareBridge.Core.Net;
 using ShareBridge.Core.Persistence;
+using ShareBridge.Core.Protocol;
 using ShareBridge.Wpf.Infrastructure;
 
 namespace ShareBridge.Wpf.ViewModels;
@@ -24,6 +26,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private ShareBridgeNode? _node;
     private PeerViewModel? _selectedPeer;
+    private MessageViewModel? _replyTarget;
     private SearchResultViewModel? _selectedSearchResult;
     private int _currentMatchIndex = -1;
     private bool _windowActive = true;
@@ -48,6 +51,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         SendMessageCommand = new AsyncRelayCommand(_ => SendDraftAsync(), _ => CanSendMessage);
         AttachFilesCommand = new RelayCommand(_ => RequestPickFiles?.Invoke(), _ => SelectedPeer is not null);
         AttachFolderCommand = new RelayCommand(_ => RequestPickFolder?.Invoke(), _ => SelectedPeer is not null);
+        AttachImagesCommand = new RelayCommand(_ => RequestPickImages?.Invoke(), _ => SelectedPeer is not null);
         OpenSettingsCommand = new RelayCommand(_ => RequestSettings?.Invoke());
         OpenDownloadsCommand = new RelayCommand(_ => OpenDownloadsFolder());
         ClearConversationCommand = new RelayCommand(_ => ClearConversation(), _ => SelectedPeer is not null);
@@ -56,6 +60,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             _ => SelectedPeer is { Timeline.Count: > 0 });
         NextMatchCommand = new RelayCommand(_ => NavigateMatch(1), _ => HasConversationMatches);
         PreviousMatchCommand = new RelayCommand(_ => NavigateMatch(-1), _ => HasConversationMatches);
+        CancelReplyCommand = new RelayCommand(_ => CancelReply(), _ => HasReplyTarget);
     }
 
     public AppSettings Settings { get; }
@@ -67,21 +72,38 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     /// <summary>Messages across all conversations that match the current search query.</summary>
     public ObservableCollection<SearchResultViewModel> SearchResults { get; } = [];
 
+    /// <summary>Pictures staged in the composer, shown as thumbnails until Send.</summary>
+    public ObservableCollection<PendingImageViewModel> PendingImages { get; } = [];
+
     public ICommand SendMessageCommand { get; }
     public ICommand AttachFilesCommand { get; }
     public ICommand AttachFolderCommand { get; }
+    public ICommand AttachImagesCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand OpenDownloadsCommand { get; }
     public ICommand ClearConversationCommand { get; }
     public ICommand ExportConversationCommand { get; }
     public ICommand NextMatchCommand { get; }
     public ICommand PreviousMatchCommand { get; }
+    public ICommand CancelReplyCommand { get; }
 
     /// <summary>Set by the view: opens the file picker.</summary>
     public Action? RequestPickFiles { get; set; }
 
     /// <summary>Set by the view: opens the folder picker.</summary>
     public Action? RequestPickFolder { get; set; }
+
+    /// <summary>Set by the view: opens the picture picker.</summary>
+    public Action? RequestPickImages { get; set; }
+
+    /// <summary>Set by the view: puts the caret in the message box.</summary>
+    public Action? RequestFocusComposer { get; set; }
+
+    /// <summary>Set by the view: opens a message's picture full size.</summary>
+    public Action<MessageViewModel>? RequestViewImage { get; set; }
+
+    /// <summary>Set by the view: saves a copy of a message's picture somewhere else.</summary>
+    public Action<MessageViewModel>? RequestSaveImage { get; set; }
 
     /// <summary>Set by the view: opens the export save dialog.</summary>
     public Action? RequestExport { get; set; }
@@ -143,6 +165,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             if (value is not null)
                 value.UnreadCount = 0;
 
+            // A reply belongs to the conversation it was started in.
+            CancelReply();
+
             RaiseUnread();
             RecomputeConversationMatches();
             RaiseAll(nameof(HasSelection), nameof(CanSendMessage), nameof(ShowFindBar));
@@ -161,7 +186,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    public bool CanSendMessage => SelectedPeer is not null && !string.IsNullOrWhiteSpace(Draft);
+    /// <summary>A picture on its own is enough to send; the draft then rides along as its caption.</summary>
+    public bool CanSendMessage =>
+        SelectedPeer is not null && (!string.IsNullOrWhiteSpace(Draft) || PendingImages.Count > 0);
+
+    public bool HasPendingImages => PendingImages.Count > 0;
+
+    public string PendingImagesText => PendingImages.Count == 1
+        ? "1 picture attached — add a caption, or just send"
+        : $"{PendingImages.Count} pictures attached — the caption goes on the first";
 
     /// <summary>Drives both the peer-list filter and the cross-conversation message search.</summary>
     public string SearchQuery
@@ -221,6 +254,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         private set => Set(ref _statusText, value);
     }
 
+    /// <summary>Lets the view put its own outcome (a save dialog's, say) in the status bar.</summary>
+    public void Report(string text) => StatusText = text;
+
     public string IdentityText => _node is null
         ? Settings.DisplayName
         : $"{_node.Self.Name} · {_node.Self.Host} · TCP {_node.ListeningPort}";
@@ -239,6 +275,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         _node.MessageReceived += (_, e) => Post(() => OnMessageReceived(e));
         _node.MessageEdited += (_, e) => Post(() => OnMessageEdited(e));
         _node.MessageDeleted += (_, e) => Post(() => OnMessageDeleted(e));
+        _node.MessageReacted += (_, e) => Post(() => OnMessageReacted(e));
         _node.TransferStarted += (_, e) => Post(() => OnTransferStarted(e.Transfer));
         _node.TransferChanged += (_, e) => Post(() => OnTransferChanged(e.Transfer));
         _node.TransferFinished += (_, e) => Post(() => OnTransferFinished(e.Transfer));
@@ -361,9 +398,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
         // The view suppresses this when the user is already looking at this conversation.
         if (Settings.ShowNotifications)
-            RequestNotification?.Invoke(vm, e.Message.Text);
+            RequestNotification?.Invoke(vm, Summarize(e.Message));
 
-        StatusText = $"Message from {vm.Name}";
+        StatusText = e.Message.HasImage ? $"Picture from {vm.Name}" : $"Message from {vm.Name}";
+    }
+
+    /// <summary>One line describing a message, for notifications: a picture needs a stand-in.</summary>
+    private static string Summarize(ChatMessage message)
+    {
+        if (!message.HasImage)
+            return message.Text;
+
+        return message.Text.Length > 0 ? $"📷 {message.Text}" : "📷 Photo";
     }
 
     private void OnTransferStarted(Transfer transfer)
@@ -434,12 +480,202 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     }
 
     // -----------------------------------------------------------------------
+    // Pictures
+    // -----------------------------------------------------------------------
+
+    /// <summary>Most pictures one send may carry, so a stray drop cannot queue hundreds.</summary>
+    private const int MaxPendingImages = 10;
+
+    /// <summary>
+    /// Stages picture files — picked, dropped or pasted — as composer attachments.
+    /// Returns how many were taken; anything skipped is explained in the status bar.
+    /// </summary>
+    public int AttachImages(IEnumerable<string> paths)
+    {
+        var added = 0;
+        var skipped = 0;
+        var oversize = 0;
+
+        foreach (var path in paths)
+        {
+            if (PendingImages.Count >= MaxPendingImages)
+            {
+                StatusText = $"Only {MaxPendingImages} pictures can go in one message.";
+                break;
+            }
+
+            if (TooBigToSend(path))
+            {
+                oversize++;
+                continue;
+            }
+
+            var pending = ImageTools.IsPicture(path) ? PendingImageViewModel.FromFile(path) : null;
+            if (pending is null)
+            {
+                skipped++;
+                continue;
+            }
+
+            Stage(pending);
+            added++;
+        }
+
+        if (oversize > 0)
+            StatusText = $"{Pictures(oversize)} over {Wire.MaxImageBytes / (1024 * 1024)} MB — send those as files instead.";
+        else if (skipped > 0)
+            StatusText = $"Could not read {(skipped == 1 ? "that file" : $"{skipped} files")} as a picture.";
+
+        return added;
+    }
+
+    private static string Pictures(int value) => value == 1 ? "1 picture" : $"{value} pictures";
+
+    /// <summary>Stages a bitmap pasted or dragged in as raw pixels (a screenshot).</summary>
+    public bool AttachImage(BitmapSource image)
+    {
+        if (PendingImages.Count >= MaxPendingImages)
+        {
+            StatusText = $"Only {MaxPendingImages} pictures can go in one message.";
+            return false;
+        }
+
+        var pending = PendingImageViewModel.FromBitmap(image);
+        if (pending is null)
+        {
+            StatusText = "That picture could not be read from the clipboard.";
+            return false;
+        }
+
+        if (pending.SizeBytes > Wire.MaxImageBytes)
+        {
+            StatusText = $"That screenshot is over {Wire.MaxImageBytes / (1024 * 1024)} MB — save it and send it as a file.";
+            return false;
+        }
+
+        Stage(pending);
+        return true;
+    }
+
+    public void ClearPendingImages()
+    {
+        if (PendingImages.Count == 0)
+            return;
+
+        PendingImages.Clear();
+        RaisePendingImages();
+    }
+
+    private void Stage(PendingImageViewModel pending)
+    {
+        pending.RemoveRequested += () =>
+        {
+            if (PendingImages.Remove(pending))
+                RaisePendingImages();
+        };
+
+        PendingImages.Add(pending);
+        RaisePendingImages();
+    }
+
+    private void RaisePendingImages()
+    {
+        RaiseAll(nameof(HasPendingImages), nameof(PendingImagesText), nameof(CanSendMessage));
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private static bool TooBigToSend(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length > Wire.MaxImageBytes;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sends the staged pictures one message at a time, so each gets its own bubble and its
+    /// own delivery state. The draft rides along as the first one's caption, Telegram-style.
+    /// </summary>
+    private async Task SendImagesAsync(PeerViewModel peer, IReadOnlyList<PendingImageViewModel> images, string caption)
+    {
+        if (_node is null)
+            return;
+
+        for (var index = 0; index < images.Count; index++)
+        {
+            var image = images[index];
+
+            string stored;
+            try
+            {
+                stored = image.Store(_node.Media, peer.Name);
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Could not attach {image.Name}: {ex.Message}";
+                continue;
+            }
+
+            var pending = new ChatMessage
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                PeerId = peer.Id,
+                Text = index == 0 ? caption : string.Empty,
+                Direction = MessageDirection.Outgoing,
+                Status = MessageStatus.Sending,
+                ImagePath = stored,
+                ImageName = image.Name,
+                ImageWidth = image.Width,
+                ImageHeight = image.Height,
+                ImageBytes = image.SizeBytes,
+            };
+
+            // A reply answers with one message; the rest of the batch rides along plain.
+            if (index == 0)
+            {
+                ApplyReplyTarget(pending);
+                CancelReply();
+            }
+
+            var bubble = NewMessage(peer, pending);
+            peer.Timeline.Add(bubble);
+            peer.Touch();
+
+            var sent = await _node.SendImageAsync(peer.Model, pending);
+            bubble.RefreshStatus();
+
+            _history.UpsertPeer(peer.Id, peer.Name, peer.Host, DateTimeOffset.Now);
+            _history.AppendMessage(peer.Id, pending);
+
+            if (sent.Status == MessageStatus.Failed)
+                StatusText = $"{peer.Name} did not receive that picture.";
+        }
+
+        RefreshSearchIfActive();
+    }
 
     private async Task SendDraftAsync()
     {
         var peer = SelectedPeer;
         var text = Draft.Trim();
-        if (_node is null || peer is null || text.Length == 0)
+        if (_node is null || peer is null)
+            return;
+
+        if (PendingImages.Count > 0)
+        {
+            var images = PendingImages.ToList();
+            Draft = string.Empty;
+            ClearPendingImages();
+
+            await SendImagesAsync(peer, images, text);
+            return;
+        }
+
+        if (text.Length == 0)
             return;
 
         Draft = string.Empty;
@@ -452,6 +688,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             Direction = MessageDirection.Outgoing,
             Status = MessageStatus.Sending,
         };
+
+        ApplyReplyTarget(pending);
+        CancelReply();
 
         var bubble = NewMessage(peer, pending);
         peer.Timeline.Add(bubble);
@@ -533,6 +772,16 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         Status = ParseEnum(entry.Status, MessageStatus.Delivered),
         Edited = entry.Edited,
         Deleted = entry.Deleted,
+        ImagePath = entry.ImagePath,
+        ImageName = entry.ImageName,
+        ImageWidth = entry.ImageWidth,
+        ImageHeight = entry.ImageHeight,
+        ImageBytes = entry.ImageBytes,
+        ReplyToId = entry.ReplyToId,
+        ReplyToPreview = entry.ReplyToPreview,
+        ReplyToFromSelf = entry.ReplyToFromSelf,
+        MyReaction = entry.MyReaction,
+        PeerReaction = entry.PeerReaction,
     };
 
     /// <summary>
@@ -555,11 +804,128 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     /// <summary>Creates a message view model wired to persist and sync its own edits/deletes.</summary>
     private MessageViewModel NewMessage(PeerViewModel peer, ChatMessage model)
     {
-        var message = new MessageViewModel(model);
+        var message = new MessageViewModel(model, peer);
         message.EditCommitted += text => EditOwnMessage(peer, message, text);
         message.DeleteRequested += () => DeleteOwnMessage(peer, message);
         message.RetryRequested += () => _ = RetryMessageAsync(peer, message);
+        message.OpenRequested += () => RequestViewImage?.Invoke(message);
+        message.SaveRequested += () => RequestSaveImage?.Invoke(message);
+        message.ReplyRequested += () => BeginReply(message);
+        message.ReplyJumpRequested += () => JumpToQuoted(peer, message);
+        message.ReactionRequested += emoji => ToggleReaction(peer, message, emoji);
         return message;
+    }
+
+    // -----------------------------------------------------------------------
+    // Replies
+    // -----------------------------------------------------------------------
+
+    /// <summary>The message the composer is currently answering, if any.</summary>
+    public MessageViewModel? ReplyTarget
+    {
+        get => _replyTarget;
+        private set
+        {
+            if (Set(ref _replyTarget, value))
+                RaiseAll(nameof(HasReplyTarget), nameof(ReplyTargetAuthor), nameof(ReplyTargetPreview));
+        }
+    }
+
+    public bool HasReplyTarget => _replyTarget is not null;
+
+    public string ReplyTargetAuthor => _replyTarget is null
+        ? string.Empty
+        : $"Replying to {(_replyTarget.IsOutgoing ? "yourself" : SelectedPeer?.Name ?? "them")}";
+
+    public string ReplyTargetPreview => _replyTarget?.QuotePreview ?? string.Empty;
+
+    public void BeginReply(MessageViewModel message)
+    {
+        ReplyTarget = message;
+        RequestFocusComposer?.Invoke();
+    }
+
+    public void CancelReply() => ReplyTarget = null;
+
+    /// <summary>Goes to the message a reply quotes, if it is still in the conversation.</summary>
+    private void JumpToQuoted(PeerViewModel peer, MessageViewModel reply)
+    {
+        var id = reply.Model.ReplyToId;
+        if (string.IsNullOrEmpty(id))
+            return;
+
+        var original = FindMessage(peer, id);
+        if (original is null)
+        {
+            StatusText = "That message is no longer in this conversation.";
+            return;
+        }
+
+        ScrollToMessageRequested?.Invoke(original);
+    }
+
+    /// <summary>Copies the pending reply onto an outgoing message, then clears it.</summary>
+    private void ApplyReplyTarget(ChatMessage message)
+    {
+        if (_replyTarget is null)
+            return;
+
+        message.ReplyToId = _replyTarget.Model.Id;
+        message.ReplyToPreview = _replyTarget.QuotePreview;
+        message.ReplyToFromSelf = _replyTarget.IsOutgoing;
+    }
+
+    // -----------------------------------------------------------------------
+    // Reactions
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Puts this side's emoji on a message, or takes it back when the same one is picked
+    /// again. The local change stands even if the peer never hears about it.
+    /// </summary>
+    private void ToggleReaction(PeerViewModel peer, MessageViewModel message, string emoji)
+    {
+        var next = message.Model.MyReaction == emoji ? null : emoji;
+
+        message.Model.MyReaction = next;
+        message.RefreshReactions();
+
+        _history.AppendReaction(peer.Id, message.Model.Id, next, mine: true);
+
+        _ = SyncReactionAsync(peer, message.Model.Id, next ?? string.Empty);
+    }
+
+    private async Task SyncReactionAsync(PeerViewModel peer, string messageId, string emoji)
+    {
+        if (_node is null)
+            return;
+
+        var delivered = await _node.ReactToMessageAsync(peer.Model, messageId, emoji);
+        if (!delivered)
+            StatusText = $"{peer.Name} may not have seen that reaction.";
+    }
+
+    /// <summary>Applies a reaction the peer put on one of the messages here.</summary>
+    private void OnMessageReacted(MessageReactionEventArgs e)
+    {
+        if (!_peersById.TryGetValue(e.From.Id, out var peer))
+            return;
+
+        var message = FindMessage(peer, e.MessageId);
+        if (message is null)
+            return;
+
+        var emoji = string.IsNullOrEmpty(e.Emoji) ? null : e.Emoji;
+        message.Model.PeerReaction = emoji;
+        message.RefreshReactions();
+
+        _history.AppendReaction(peer.Id, e.MessageId, emoji, mine: false);
+
+        if (emoji is not null)
+        {
+            peer.Touch();
+            StatusText = $"{peer.Name} reacted {emoji}";
+        }
     }
 
     private async Task RetryMessageAsync(PeerViewModel peer, MessageViewModel message)
@@ -595,6 +961,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void DeleteOwnMessage(PeerViewModel peer, MessageViewModel message)
     {
+        if (ReferenceEquals(_replyTarget, message))
+            CancelReply();
+
         peer.Timeline.Remove(message);
         _history.AppendDelete(peer.Id, message.Model.Id);
         RefreshSearchIfActive();
@@ -650,6 +1019,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (message is null)
             return;
 
+        if (ReferenceEquals(_replyTarget, message))
+            CancelReply();
+
         peer.Timeline.Remove(message);
         _history.AppendDelete(peer.Id, e.MessageId);
         RefreshSearchIfActive();
@@ -683,6 +1055,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         peer.Timeline.Clear();
         _history.Clear(peer.Id);
 
+        // The conversation's pictures go with it — nothing left on screen can reach them.
+        _node?.Media.ClearPeer(peer.Name);
+
         // With nothing left to show, drop an offline peer from the list entirely.
         if (!peer.IsOnline)
         {
@@ -698,6 +1073,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public void ClearAllHistory()
     {
         _history.ClearAll();
+        _node?.Media.ClearAll();
 
         foreach (var peer in Peers.ToList())
         {
@@ -760,7 +1136,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
                     var stamp = m.Model.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                     var who = m.Model.Direction == MessageDirection.Outgoing ? "You" : peer.Name;
                     var failed = m.Model.Status == MessageStatus.Failed ? "  (not delivered)" : string.Empty;
-                    sb.AppendLine($"[{stamp}] {who}: {m.Model.Text}{failed}");
+                    var picture = m.Model.HasImage ? $"[picture: {m.Model.ImageName}] " : string.Empty;
+
+                    if (m.IsReply)
+                        sb.AppendLine($"    ↳ in reply to {m.ReplyAuthor}: {m.ReplyPreview}");
+
+                    sb.AppendLine($"[{stamp}] {who}: {picture}{m.Model.Text}{failed}");
+
+                    if (m.HasReactions)
+                        sb.AppendLine($"    {string.Join(" ", m.ReactionChips.Select(c => $"{c.Emoji}{c.CountText}"))}");
                     break;
 
                 case TransferViewModel t:

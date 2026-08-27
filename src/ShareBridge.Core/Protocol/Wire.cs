@@ -13,6 +13,12 @@ public static class Wire
     /// from making us allocate arbitrarily.</summary>
     public const int MaxFrameBytes = 1024 * 1024;
 
+    /// <summary>
+    /// Largest picture that may travel as an inline chat message. Anything bigger belongs
+    /// in a file transfer, which is resumable-ish, cancellable and asks before writing.
+    /// </summary>
+    public const long MaxImageBytes = 32L * 1024 * 1024;
+
     public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -54,9 +60,11 @@ public sealed class DiscoveryPacket
 public static class FrameKind
 {
     public const string Message = "MSG";
+    public const string Image = "IMG";
     public const string MessageAck = "MSG_ACK";
     public const string MessageEdit = "MSG_EDIT";
     public const string MessageDelete = "MSG_DELETE";
+    public const string Reaction = "REACT";
     public const string Offer = "OFFER";
     public const string OfferResult = "OFFER_RESULT";
     public const string Complete = "COMPLETE";
@@ -70,6 +78,66 @@ public sealed class MessageFrame
     public string Id { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public DateTimeOffset SentAt { get; set; } = DateTimeOffset.Now;
+
+    /// <summary>Set when this message replies to another. Older peers ignore these fields
+    /// and simply show it as an ordinary message.</summary>
+    public string? ReplyToId { get; set; }
+
+    public string? ReplyToPreview { get; set; }
+
+    /// <summary>True when the quoted message was written by the sender of this frame.</summary>
+    public bool ReplyToFromSelf { get; set; }
+}
+
+/// <summary>
+/// Puts, changes or clears the sender's emoji on an earlier message. One reaction per
+/// person per message: a new emoji replaces the old, and an empty one removes it.
+/// </summary>
+public sealed class ReactionFrame
+{
+    public int V { get; set; } = Wire.ProtocolVersion;
+    public string Kind { get; set; } = FrameKind.Reaction;
+    public PeerIdentity From { get; set; } = new();
+
+    /// <summary>Id of the message being reacted to.</summary>
+    public string Id { get; set; } = string.Empty;
+
+    public string Emoji { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Header for a picture sent inline in the conversation. The receiver answers with an
+/// OFFER_RESULT; on an accept, exactly <see cref="Size"/> raw bytes follow on the same
+/// connection and the receiver finishes with a MSG_ACK.
+/// </summary>
+public sealed class ImageFrame
+{
+    public int V { get; set; } = Wire.ProtocolVersion;
+    public string Kind { get; set; } = FrameKind.Image;
+    public PeerIdentity From { get; set; } = new();
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>File name only — no path. The receiver sanitizes it before use.</summary>
+    public string FileName { get; set; } = "image.png";
+
+    public long Size { get; set; }
+
+    /// <summary>Pixel size, so the far end can label the picture without decoding it.</summary>
+    public int Width { get; set; }
+
+    public int Height { get; set; }
+
+    /// <summary>Optional text shown under the picture; edits later replace it.</summary>
+    public string Caption { get; set; } = string.Empty;
+
+    public DateTimeOffset SentAt { get; set; } = DateTimeOffset.Now;
+
+    /// <summary>Set when the picture is a reply. See <see cref="MessageFrame.ReplyToId"/>.</summary>
+    public string? ReplyToId { get; set; }
+
+    public string? ReplyToPreview { get; set; }
+
+    public bool ReplyToFromSelf { get; set; }
 }
 
 public sealed class MessageAckFrame

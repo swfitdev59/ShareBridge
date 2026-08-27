@@ -74,6 +74,10 @@ public sealed class AppSettings
     [JsonIgnore]
     public static string HistoryFolder { get; } = Path.Combine(AppDataFolder, "history");
 
+    /// <summary>Folder holding the pictures sent and received in conversations.</summary>
+    [JsonIgnore]
+    public static string MediaFolder { get; } = Path.Combine(AppDataFolder, "media");
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

@@ -16,6 +16,9 @@ public sealed class HistoryEntry
     /// <summary>Control record: remove an earlier message (<see cref="Id"/>).</summary>
     public const string KindDelete = "delete";
 
+    /// <summary>Control record: set one side's emoji on an earlier message (<see cref="Id"/>).</summary>
+    public const string KindReaction = "reaction";
+
     public string Kind { get; set; } = KindMessage;
     public string Id { get; set; } = string.Empty;
 
@@ -29,6 +32,25 @@ public sealed class HistoryEntry
     public string? Status { get; set; }
     public bool Edited { get; set; }
     public bool Deleted { get; set; }
+
+    // --- reply fields, set when a message quotes another ---
+    public string? ReplyToId { get; set; }
+    public string? ReplyToPreview { get; set; }
+    public bool ReplyToFromSelf { get; set; }
+
+    // --- reactions: each side's emoji on a message, from this machine's point of view ---
+    public string? MyReaction { get; set; }
+    public string? PeerReaction { get; set; }
+
+    /// <summary>On a <see cref="KindReaction"/> record: whose emoji it is.</summary>
+    public bool ReactionIsMine { get; set; }
+
+    // --- picture fields, set when a message carries one ---
+    public string? ImagePath { get; set; }
+    public string? ImageName { get; set; }
+    public int ImageWidth { get; set; }
+    public int ImageHeight { get; set; }
+    public long ImageBytes { get; set; }
 
     // --- transfer fields ---
     public string? Title { get; set; }

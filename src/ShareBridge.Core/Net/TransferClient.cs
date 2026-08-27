@@ -37,6 +37,9 @@ public sealed class TransferClient
             Id = message.Id,
             Text = message.Text,
             SentAt = message.Timestamp,
+            ReplyToId = message.ReplyToId,
+            ReplyToPreview = message.ReplyToPreview,
+            ReplyToFromSelf = message.ReplyToFromSelf,
         };
 
         await FrameIO.WriteFrameAsync(stream, frame, ct).ConfigureAwait(false);
@@ -45,6 +48,95 @@ public sealed class TransferClient
         var (kind, _) = await FrameIO.ReadFrameAsync(stream, ct).ConfigureAwait(false);
         if (kind != FrameKind.MessageAck)
             throw new InvalidDataException($"Expected an ack, got '{kind}'.");
+    }
+
+    /// <summary>
+    /// Sends a picture inline: the header frame, then the file's bytes, then waits for the
+    /// ack. Pictures are conversation content rather than a file transfer, so there is no
+    /// accept prompt and no progress card — the bubble just settles to delivered or failed.
+    /// </summary>
+    public async Task SendImageAsync(Peer peer, ChatMessage message, CancellationToken ct)
+    {
+        var path = message.ImagePath
+                   ?? throw new InvalidOperationException("That message has no picture attached.");
+
+        var info = new FileInfo(path);
+        if (!info.Exists)
+            throw new FileNotFoundException("That picture is no longer on disk.", path);
+
+        if (info.Length > Wire.MaxImageBytes)
+        {
+            throw new InvalidOperationException(
+                $"Pictures are limited to {Wire.MaxImageBytes / (1024 * 1024)} MB — send it as a file instead.");
+        }
+
+        using var client = await ConnectAsync(peer, ct).ConfigureAwait(false);
+        await using var stream = client.GetStream();
+
+        var frame = new ImageFrame
+        {
+            From = _self,
+            Id = message.Id,
+            FileName = message.ImageName ?? info.Name,
+            Size = info.Length,
+            Width = message.ImageWidth,
+            Height = message.ImageHeight,
+            Caption = message.Text,
+            SentAt = message.Timestamp,
+            ReplyToId = message.ReplyToId,
+            ReplyToPreview = message.ReplyToPreview,
+            ReplyToFromSelf = message.ReplyToFromSelf,
+        };
+
+        await FrameIO.WriteFrameAsync(stream, frame, ct).ConfigureAwait(false);
+
+        // Wait for the go-ahead before streaming. A refusal (too big, or not a picture) then
+        // arrives as a reason we can show, instead of the broken pipe the receiver would
+        // otherwise leave us with halfway through the bytes.
+        var (verdictKind, verdictPayload) = await FrameIO.ReadFrameAsync(stream, ct).ConfigureAwait(false);
+        if (verdictKind != FrameKind.OfferResult)
+            throw new InvalidDataException($"Expected a picture result, got '{verdictKind}'.");
+
+        var verdict = FrameIO.Decode<OfferResultFrame>(verdictPayload);
+        if (!verdict.Accept)
+            throw new OfferRejectedException(verdict.Reason ?? "The other side refused the picture.");
+
+        await using (var file = new FileStream(
+                         path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
+                         CopyBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            await StreamExactlyAsync(file, stream, info.Length, ct).ConfigureAwait(false);
+        }
+
+        await stream.FlushAsync(ct).ConfigureAwait(false);
+
+        var (kind, _) = await FrameIO.ReadFrameAsync(stream, ct).ConfigureAwait(false);
+        if (kind != FrameKind.MessageAck)
+            throw new InvalidDataException($"Expected an ack, got '{kind}'.");
+    }
+
+    /// <summary>
+    /// Writes exactly <paramref name="count"/> bytes, padding if the file shrank underneath
+    /// us so the receiver's accounting still lines up instead of hanging.
+    /// </summary>
+    private static async Task StreamExactlyAsync(Stream source, Stream destination, long count, CancellationToken ct)
+    {
+        var buffer = new byte[CopyBufferSize];
+        var remaining = count;
+
+        while (remaining > 0)
+        {
+            var chunk = (int)Math.Min(buffer.Length, remaining);
+            var read = await source.ReadAsync(buffer.AsMemory(0, chunk), ct).ConfigureAwait(false);
+            if (read <= 0)
+            {
+                Array.Clear(buffer, 0, chunk);
+                read = chunk;
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            remaining -= read;
+        }
     }
 
     public async Task SendEditAsync(Peer peer, string messageId, string newText, CancellationToken ct)
@@ -63,6 +155,17 @@ public sealed class TransferClient
         await using var stream = client.GetStream();
 
         var frame = new MessageDeleteFrame { From = _self, Id = messageId };
+        await FrameIO.WriteFrameAsync(stream, frame, ct).ConfigureAwait(false);
+        await ReadAckAsync(stream, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Puts the sender's emoji on a message, or clears it when empty.</summary>
+    public async Task SendReactionAsync(Peer peer, string messageId, string emoji, CancellationToken ct)
+    {
+        using var client = await ConnectAsync(peer, ct).ConfigureAwait(false);
+        await using var stream = client.GetStream();
+
+        var frame = new ReactionFrame { From = _self, Id = messageId, Emoji = emoji };
         await FrameIO.WriteFrameAsync(stream, frame, ct).ConfigureAwait(false);
         await ReadAckAsync(stream, ct).ConfigureAwait(false);
     }
