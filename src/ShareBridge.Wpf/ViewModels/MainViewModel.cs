@@ -46,8 +46,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         PeersView.LiveSortingProperties.Add(nameof(PeerViewModel.Name));
 
         SendMessageCommand = new AsyncRelayCommand(_ => SendDraftAsync(), _ => CanSendMessage);
-        SendFilesCommand = new RelayCommand(_ => RequestPickFiles?.Invoke(), _ => SelectedPeer is not null);
-        SendFolderCommand = new RelayCommand(_ => RequestPickFolder?.Invoke(), _ => SelectedPeer is not null);
+        AttachFilesCommand = new RelayCommand(_ => RequestPickFiles?.Invoke(), _ => SelectedPeer is not null);
+        AttachFolderCommand = new RelayCommand(_ => RequestPickFolder?.Invoke(), _ => SelectedPeer is not null);
         OpenSettingsCommand = new RelayCommand(_ => RequestSettings?.Invoke());
         OpenDownloadsCommand = new RelayCommand(_ => OpenDownloadsFolder());
         ClearConversationCommand = new RelayCommand(_ => ClearConversation(), _ => SelectedPeer is not null);
@@ -68,8 +68,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<SearchResultViewModel> SearchResults { get; } = [];
 
     public ICommand SendMessageCommand { get; }
-    public ICommand SendFilesCommand { get; }
-    public ICommand SendFolderCommand { get; }
+    public ICommand AttachFilesCommand { get; }
+    public ICommand AttachFolderCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand OpenDownloadsCommand { get; }
     public ICommand ClearConversationCommand { get; }
@@ -80,17 +80,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     /// <summary>Set by the view: opens the file picker.</summary>
     public Action? RequestPickFiles { get; set; }
 
-    /// <summary>Set by the view: opens the export save dialog.</summary>
-    public Action? RequestExport { get; set; }
-
     /// <summary>Set by the view: opens the folder picker.</summary>
     public Action? RequestPickFolder { get; set; }
+
+    /// <summary>Set by the view: opens the export save dialog.</summary>
+    public Action? RequestExport { get; set; }
 
     /// <summary>Set by the view: opens the settings window.</summary>
     public Action? RequestSettings { get; set; }
 
     /// <summary>Set by the view: asks the user to accept an inbound transfer.</summary>
-    public Func<TransferViewModel, Task<bool>>? RequestOfferDecision { get; set; }
+    public Func<TransferViewModel, CancellationToken, Task<bool>>? RequestOfferDecision { get; set; }
 
     /// <summary>Set by the view: called when something arrives while unfocused.</summary>
     public Action? RequestAttention { get; set; }
@@ -265,8 +265,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task SendPathsAsync(IReadOnlyList<string> paths)
     {
         var peer = SelectedPeer;
-        if (_node is null || peer is null || paths.Count == 0)
+        if (_node is null || peer is null)
             return;
+
+        if (paths.Count == 0)
+        {
+            StatusText = "Nothing to send — that selection no longer exists.";
+            return;
+        }
 
         try
         {
@@ -362,10 +368,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void OnTransferStarted(Transfer transfer)
     {
+        var peer = ResolvePeer(transfer);
+
+        // A retried transfer reuses its id. On the sender it is the same object (updates in
+        // place), but on the receiver each offer is a NEW object with the same id — replace
+        // the stale (e.g. "Declined") card so the fresh offer gets a live one.
+        if (_transfersById.TryGetValue(transfer.Id, out var stale) && !ReferenceEquals(stale.Model, transfer))
+        {
+            _transfersById.Remove(transfer.Id);
+            peer?.Timeline.Remove(stale);
+        }
+
         var vm = GetOrCreateTransfer(transfer);
         vm.Refresh(); // reflect a retried transfer's reset state on its existing card
 
-        var peer = ResolvePeer(transfer);
         if (peer is not null && !peer.Timeline.Contains(vm))
         {
             peer.Touch();
@@ -406,14 +422,15 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         };
     }
 
-    private Task<bool> DecideOfferAsync(Transfer transfer)
+    private Task<bool> DecideOfferAsync(Transfer transfer, CancellationToken senderGone)
     {
         var handler = RequestOfferDecision;
         if (handler is null)
             return Task.FromResult(false);
 
-        // Hop to the UI thread; the returned task completes when the user answers.
-        return _dispatcher.InvokeAsync(() => handler(GetOrCreateTransfer(transfer))).Task.Unwrap();
+        // Hop to the UI thread; the returned task completes when the user answers, or is
+        // cancelled if the sender disconnects (senderGone) so the prompt closes itself.
+        return _dispatcher.InvokeAsync(() => handler(GetOrCreateTransfer(transfer), senderGone)).Task.Unwrap();
     }
 
     // -----------------------------------------------------------------------
@@ -440,7 +457,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         peer.Timeline.Add(bubble);
         peer.Touch();
 
-        var sent = await _node.SendMessageAsync(peer.Model, text);
+        // Send the very message the bubble wraps, so its id is what the peer stores — that
+        // keeps later edits/deletes matching on their side.
+        var sent = await _node.SendMessageAsync(peer.Model, pending);
 
         pending.Status = sent.Status;
         bubble.RefreshStatus();

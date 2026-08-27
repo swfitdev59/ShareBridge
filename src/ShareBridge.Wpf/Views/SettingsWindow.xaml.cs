@@ -20,17 +20,36 @@ public partial class SettingsWindow : Window
         _openHistory = openHistory;
         _clearHistory = clearHistory;
 
-        DisplayNameBox.Text = settings.DisplayName;
-        DownloadFolderBox.Text = settings.DownloadFolder;
-        AutoAcceptBox.IsChecked = settings.AutoAcceptFiles;
-        NotificationsBox.IsChecked = settings.ShowNotifications;
-        MinimizeToTrayBox.IsChecked = settings.MinimizeToTray;
-        CloseToTrayBox.IsChecked = settings.CloseToTray;
-        SaveHistoryBox.IsChecked = settings.SaveHistory;
-        DiscoveryPortBox.Text = settings.DiscoveryPort.ToString(CultureInfo.InvariantCulture);
-        TransferPortBox.Text = settings.TransferPort.ToString(CultureInfo.InvariantCulture);
+        ShowValues(settings);
 
         Loaded += (_, _) => DisplayNameBox.Focus();
+    }
+
+    /// <summary>Fills the form from a settings object without committing anything.</summary>
+    private void ShowValues(AppSettings values)
+    {
+        DisplayNameBox.Text = values.DisplayName;
+        DownloadFolderBox.Text = values.DownloadFolder;
+        AutoAcceptBox.IsChecked = values.AutoAcceptFiles;
+        NotificationsBox.IsChecked = values.ShowNotifications;
+        MinimizeToTrayBox.IsChecked = values.MinimizeToTray;
+        CloseToTrayBox.IsChecked = values.CloseToTray;
+        SaveHistoryBox.IsChecked = values.SaveHistory;
+        DiscoveryPortBox.Text = values.DiscoveryPort.ToString(CultureInfo.InvariantCulture);
+        TransferPortBox.Text = values.TransferPort.ToString(CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Repopulates the form from a stock <see cref="AppSettings"/>, so the defaults never
+    /// drift from the ones the app itself would use on a fresh install. Nothing is written
+    /// until Save; Cancel still backs the whole thing out. NodeId and saved conversations
+    /// are deliberately untouched — resetting the id would orphan existing history.
+    /// </summary>
+    private void OnRestoreDefaults(object sender, RoutedEventArgs e)
+    {
+        ShowValues(new AppSettings());
+        ErrorText.Visibility = Visibility.Collapsed;
+        DisplayNameBox.Focus();
     }
 
     private void OnOpenHistory(object sender, RoutedEventArgs e) => _openHistory?.Invoke();

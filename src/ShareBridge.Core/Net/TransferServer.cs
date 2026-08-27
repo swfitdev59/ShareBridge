@@ -64,10 +64,11 @@ public sealed class TransferServer : IAsyncDisposable
     public int Port { get; private set; }
 
     /// <summary>
-    /// Asked for a decision on each inbound offer. Returning false rejects it.
-    /// When null, offers are accepted only if <see cref="AppSettings.AutoAcceptFiles"/> is set.
+    /// Asked for a decision on each inbound offer. Returning false rejects it. The token is
+    /// cancelled if the sender disconnects while the decision is pending (so the prompt can
+    /// close). When null, offers are accepted only if <see cref="AppSettings.AutoAcceptFiles"/> is set.
     /// </summary>
-    public Func<Transfer, Task<bool>>? OfferDecision { get; set; }
+    public Func<Transfer, CancellationToken, Task<bool>>? OfferDecision { get; set; }
 
     public event EventHandler<IncomingMessageEventArgs>? MessageReceived;
 
@@ -260,16 +261,38 @@ public sealed class TransferServer : IAsyncDisposable
 
         TransferStarted?.Invoke(this, new TransferEventArgs(transfer));
 
+        // Watch for the sender hanging up while we wait for the user, so the prompt can close.
+        using var senderGone = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var stopWatch = new CancellationTokenSource();
+        var watch = WatchForDisconnectAsync((stream as NetworkStream)?.Socket, senderGone, stopWatch.Token);
+
         bool accepted;
+        var cancelledBySender = false;
         try
         {
             accepted = _settings.AutoAcceptFiles
-                       || (OfferDecision is not null && await OfferDecision(transfer).ConfigureAwait(false));
+                       || (OfferDecision is not null && await OfferDecision(transfer, senderGone.Token).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (senderGone.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            cancelledBySender = true;
+            accepted = false;
         }
         catch (Exception ex)
         {
             accepted = false;
             Log?.Invoke(this, $"Offer decision failed: {ex.Message}");
+        }
+        finally
+        {
+            await stopWatch.CancelAsync().ConfigureAwait(false);
+            try { await watch.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        }
+
+        if (cancelledBySender)
+        {
+            Finish(transfer, TransferStatus.Cancelled, "The sender cancelled.");
+            return;
         }
 
         if (!accepted)
@@ -303,6 +326,40 @@ public sealed class TransferServer : IAsyncDisposable
         {
             Finish(transfer, TransferStatus.Failed, ex.Message);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Polls the socket while the accept prompt is open. Between the offer and the offer
+    /// result the sender sends nothing, so any readable state means the connection closed —
+    /// i.e. the sender cancelled. Cancels <paramref name="senderGone"/> when that happens.
+    /// Polling (not reading) avoids consuming the file bytes that follow an accept.
+    /// </summary>
+    private static async Task WatchForDisconnectAsync(Socket? socket, CancellationTokenSource senderGone, CancellationToken stop)
+    {
+        if (socket is null)
+            return;
+
+        try
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0)
+                {
+                    await senderGone.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
+
+                await Task.Delay(200, stop).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The decision was made; stop watching.
+        }
+        catch (SocketException)
+        {
+            await senderGone.CancelAsync().ConfigureAwait(false);
         }
     }
 

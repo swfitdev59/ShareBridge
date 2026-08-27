@@ -150,29 +150,47 @@ public partial class MainWindow : Window
     // Pickers
     // -----------------------------------------------------------------------
 
+    /// <summary>
+    /// The shell has no dialog that takes a mixed selection of files and folders — and it
+    /// will not close the file dialog on an empty name box, so a folder can only come back
+    /// from a placeholder parked in that box. Rather than show one, the attach button asks
+    /// which kind first and opens the matching native picker, both with an empty name box.
+    /// </summary>
+    private void OnAttachClick(object sender, RoutedEventArgs e)
+    {
+        if (AttachButton.ContextMenu is not { } menu)
+            return;
+
+        menu.PlacementTarget = AttachButton;
+        menu.IsOpen = true;
+    }
+
     private async void PickFiles()
     {
         var dialog = new OpenFileDialog
         {
             Title = "Choose files to send",
             Multiselect = true,
-            CheckFileExists = true,
         };
 
-        if (dialog.ShowDialog(this) == true)
-            await _viewModel.SendPathsAsync(dialog.FileNames);
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        await _viewModel.SendPathsAsync(dialog.FileNames);
     }
 
     private async void PickFolder()
     {
         var dialog = new OpenFolderDialog
         {
-            Title = "Choose a folder to send",
-            Multiselect = false,
+            Title = "Choose folders to send",
+            Multiselect = true,
         };
 
-        if (dialog.ShowDialog(this) == true)
-            await _viewModel.SendPathsAsync([dialog.FolderName]);
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        await _viewModel.SendPathsAsync(dialog.FolderNames);
     }
 
     private void ExportConversation()
@@ -207,11 +225,12 @@ public partial class MainWindow : Window
             _ = _viewModel.ApplySettingsAsync();
     }
 
-    private Task<bool> AskAboutOfferAsync(TransferViewModel transfer)
+    private Task<bool> AskAboutOfferAsync(TransferViewModel transfer, CancellationToken senderGone)
     {
         FlashIfInactive();
 
-        var window = new IncomingOfferWindow(transfer) { Owner = this };
+        // The dialog closes itself if the sender disconnects before the user answers.
+        var window = new IncomingOfferWindow(transfer, senderGone) { Owner = this };
         return Task.FromResult(window.ShowDialog() == true);
     }
 

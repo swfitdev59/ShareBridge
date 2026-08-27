@@ -8,8 +8,16 @@ namespace ShareBridge.Core;
 /// </summary>
 public sealed class AppSettings
 {
-    public const int DefaultDiscoveryPort = 2425;
-    public const int DefaultTransferPort = 2426;
+    // Picked from the unassigned 47100-47556 block so nothing well-known collides, and
+    // kept below 49152 so a fixed listener never races the Windows ephemeral range.
+    public const int DefaultDiscoveryPort = 47425;
+    public const int DefaultTransferPort = 47426;
+
+    // Ports shipped before the move off the registered 2425/2426 pair. Settings written by
+    // those builds are migrated on load, otherwise upgraded machines would keep announcing
+    // on the old discovery port and never see a fresh install.
+    private const int LegacyDiscoveryPort = 2425;
+    private const int LegacyTransferPort = 2426;
 
     /// <summary>
     /// Stable identity for this user on this machine, generated once and persisted.
@@ -93,12 +101,16 @@ public sealed class AppSettings
             settings = new AppSettings();
         }
 
-        settings.Normalize();
+        var migrated = settings.Normalize();
 
         // The first run mints a stable id and writes it back, so it stays fixed from here on.
         if (string.IsNullOrWhiteSpace(settings.NodeId))
         {
             settings.NodeId = Guid.NewGuid().ToString("N");
+            settings.Save();
+        }
+        else if (migrated)
+        {
             settings.Save();
         }
 
@@ -120,10 +132,29 @@ public sealed class AppSettings
 
     public AppSettings Clone() => (AppSettings)MemberwiseClone();
 
-    private void Normalize()
+    /// <summary>
+    /// Repairs out-of-range values and migrates settings written by older builds.
+    /// Returns true when a migration changed something worth writing back to disk.
+    /// </summary>
+    private bool Normalize()
     {
         if (string.IsNullOrWhiteSpace(DisplayName))
             DisplayName = Environment.UserName;
+
+        // Only the untouched legacy defaults move. A port the user typed themselves is
+        // their choice and stays put, even if it happens to sit low in the range.
+        var migrated = false;
+        if (DiscoveryPort == LegacyDiscoveryPort)
+        {
+            DiscoveryPort = DefaultDiscoveryPort;
+            migrated = true;
+        }
+
+        if (TransferPort == LegacyTransferPort)
+        {
+            TransferPort = DefaultTransferPort;
+            migrated = true;
+        }
 
         if (DiscoveryPort is < 1 or > 65535)
             DiscoveryPort = DefaultDiscoveryPort;
@@ -139,5 +170,7 @@ public sealed class AppSettings
 
         HeartbeatSeconds = Math.Clamp(HeartbeatSeconds, 1, 60);
         PeerTimeoutSeconds = Math.Max(PeerTimeoutSeconds, HeartbeatSeconds * 3);
+
+        return migrated;
     }
 }

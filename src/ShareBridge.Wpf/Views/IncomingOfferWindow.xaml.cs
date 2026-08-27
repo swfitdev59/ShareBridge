@@ -11,9 +11,10 @@ public partial class IncomingOfferWindow : Window
     private const int AutoDeclineSeconds = 90;
 
     private readonly DispatcherTimer _timer;
+    private CancellationTokenRegistration _senderGoneRegistration;
     private int _secondsLeft = AutoDeclineSeconds;
 
-    public IncomingOfferWindow(TransferViewModel transfer)
+    public IncomingOfferWindow(TransferViewModel transfer, CancellationToken senderGone = default)
     {
         InitializeComponent();
 
@@ -30,6 +31,9 @@ public partial class IncomingOfferWindow : Window
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += OnTick;
 
+        // If the sender cancels/disconnects while we wait, dismiss the prompt automatically.
+        _senderGoneRegistration = senderGone.Register(() => Dispatcher.BeginInvoke(CloseFromSenderGone));
+
         Loaded += (_, _) =>
         {
             UpdateCountdown();
@@ -37,7 +41,27 @@ public partial class IncomingOfferWindow : Window
             Activate();
         };
 
-        Closed += (_, _) => _timer.Stop();
+        Closed += (_, _) =>
+        {
+            _timer.Stop();
+            _senderGoneRegistration.Dispose();
+        };
+    }
+
+    private void CloseFromSenderGone()
+    {
+        if (!IsLoaded && !IsVisible)
+            return;
+
+        _timer.Stop();
+        try
+        {
+            DialogResult = false;
+        }
+        catch (InvalidOperationException)
+        {
+            Close();
+        }
     }
 
     private void OnAccept(object sender, RoutedEventArgs e)

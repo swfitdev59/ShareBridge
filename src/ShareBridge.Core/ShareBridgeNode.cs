@@ -65,7 +65,7 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     public IReadOnlyCollection<Peer> Peers => _discovery.Peers;
 
     /// <summary>Asked whether to accept each inbound offer. See <see cref="TransferServer.OfferDecision"/>.</summary>
-    public Func<Transfer, Task<bool>>? OfferDecision
+    public Func<Transfer, CancellationToken, Task<bool>>? OfferDecision
     {
         get => _server.OfferDecision;
         set => _server.OfferDecision = value;
@@ -95,19 +95,13 @@ public sealed class ShareBridgeNode : IAsyncDisposable
     public Peer? FindPeer(string id) => _discovery.Find(id);
 
     /// <summary>
-    /// Sends a chat message and returns it with <see cref="MessageStatus"/> reflecting
-    /// the outcome. Never throws for ordinary network failures.
+    /// Sends the given chat message, updating its <see cref="MessageStatus"/> to reflect the
+    /// outcome. The message keeps its id on the wire, so later edits/deletes match on the
+    /// receiver. Never throws for ordinary network failures.
     /// </summary>
-    public async Task<ChatMessage> SendMessageAsync(Peer peer, string text, CancellationToken ct = default)
+    public async Task<ChatMessage> SendMessageAsync(Peer peer, ChatMessage message, CancellationToken ct = default)
     {
-        var message = new ChatMessage
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            PeerId = peer.Id,
-            Text = text,
-            Direction = MessageDirection.Outgoing,
-            Status = MessageStatus.Sending,
-        };
+        message.Status = MessageStatus.Sending;
 
         try
         {

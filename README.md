@@ -38,7 +38,9 @@ directly between machines over TCP. No server, no account, no cloud.
   next/previous (Enter / Shift+Enter, or F3 / Shift+F3).
 - **Export** — save any conversation to a `.txt` or `.md` transcript from the chat header.
 - **Settings** — display name, download folder, ports, auto-accept, save-history. Persisted to
-  `%APPDATA%\ShareBridge\settings.json`.
+  `%APPDATA%\ShareBridge\settings.json`. **Restore defaults** puts every field back to its
+  stock value; it takes effect only when you then hit Save, and leaves your identity and
+  saved conversations alone.
 
 ## Requirements
 
@@ -93,11 +95,11 @@ or `win-arm64`.
 
 ## How it works
 
-- **Discovery** — UDP on port **2425** (configurable). Packets are small JSON blobs
+- **Discovery** — UDP on port **47425** (configurable). Packets are small JSON blobs
   carrying an id, display name, host and the TCP port the sender is really listening on.
   Broadcasts go to `255.255.255.255` and to each interface's directed broadcast, so
   multi-NIC hosts are covered. Peers that stop announcing age out after a timeout.
-- **Transport** — TCP on port **2426** (configurable, with ephemeral fallback). Each
+- **Transport** — TCP on port **47426** (configurable, with ephemeral fallback). Each
   exchange is its own short-lived connection: a length-prefixed JSON frame selects the
   kind (message, or file offer), and file bytes stream directly after an accepted offer.
 - **Stable identity** — each install has a per-user id (`nodeId` in `settings.json`,
